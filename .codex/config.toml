@@ -1,0 +1,20 @@
+# Project defaults. Desktop thread/model selection and managed policy can override them.
+# See docs/CODEX.md before merging into an existing configuration.
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
+
+[agents.researcher]
+description = "Read-only official-source research for one concrete implementation question."
+config_file = "agents/researcher.toml"
+
+[agents.test_designer]
+description = "Read-only design of observable acceptance tests and failure experiments."
+config_file = "agents/test-designer.toml"
+
+[agents.reviewer]
+description = "Read-only review of the current milestone diff and its actual verification evidence."
+config_file = "agents/reviewer.toml"

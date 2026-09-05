@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RelayLab.Core/RelayLab.Core.csproj" />
+    <Project Path="src/RelayLab.Api/RelayLab.Api.csproj" />
+    <Project Path="src/RelayLab.Worker/RelayLab.Worker.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/RelayLab.Receiver/RelayLab.Receiver.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RelayLab.Tests/RelayLab.Tests.csproj" />
+  </Folder>
+</Solution>

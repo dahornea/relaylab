@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+    <PackageReference Include="Testcontainers.ServiceBus" Version="4.14.0" />
+    <ProjectReference Include="../../src/RelayLab.Core/RelayLab.Core.csproj" />
+    <ProjectReference Include="../../src/RelayLab.Api/RelayLab.Api.csproj" />
+    <ProjectReference Include="../../src/RelayLab.Worker/RelayLab.Worker.csproj" />
+    <ProjectReference Include="../../samples/RelayLab.Receiver/RelayLab.Receiver.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../infra/ServiceBusConfig.json" Link="infra/ServiceBusConfig.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../infra/versions.json" Link="infra/versions.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

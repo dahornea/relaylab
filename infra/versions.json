@@ -1,0 +1,6 @@
+{
+  "sql": "mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04",
+  "serviceBus": "mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0",
+  "sdk": "mcr.microsoft.com/dotnet/sdk:10.0.400",
+  "aspnet": "mcr.microsoft.com/dotnet/aspnet:10.0.11"
+}

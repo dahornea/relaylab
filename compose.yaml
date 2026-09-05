@@ -1,0 +1,105 @@
+name: relaylab
+
+x-app-environment: &app-environment
+  DOTNET_ENVIRONMENT: Development
+  ASPNETCORE_ENVIRONMENT: Development
+  ASPNETCORE_URLS: http://+:8080
+  ConnectionStrings__RelayLab: "Server=sql,1433;Database=RelayLab;User Id=sa;Password=${SQL_PASSWORD:?Run eng/demo.ps1};Encrypt=True;TrustServerCertificate=True"
+  ConnectionStrings__ServiceBus: "Endpoint=sb://servicebus:5672;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+  RelayLab__DestinationUrl: http://receiver:8080/webhooks
+  RelayLab__Queue: deliveries
+
+x-build-args: &build-args
+  SDK_IMAGE: ${SDK_IMAGE:?Run eng/demo.ps1}
+  RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run eng/demo.ps1}
+
+services:
+  sql:
+    image: ${SQL_IMAGE:?Run eng/demo.ps1}
+    environment:
+      ACCEPT_EULA: Y
+      MSSQL_SA_PASSWORD: ${SQL_PASSWORD:?Run eng/demo.ps1}
+      SQLCMDPASSWORD: ${SQL_PASSWORD:?Run eng/demo.ps1}
+    volumes:
+      - sql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -Q 'SELECT 1'; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -C -b -Q 'SELECT 1'; fi"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  servicebus:
+    image: ${SERVICEBUS_IMAGE:?Run eng/demo.ps1}
+    environment:
+      ACCEPT_EULA: Y
+      SQL_SERVER: sql
+      MSSQL_SA_PASSWORD: ${SQL_PASSWORD:?Run eng/demo.ps1}
+    volumes:
+      - ./infra/ServiceBusConfig.json:/ServiceBus_Emulator/ConfigFiles/Config.json:ro
+    ports:
+      - 127.0.0.1:${BROKER_HEALTH_PORT:-5300}:5300
+    depends_on:
+      sql: { condition: service_healthy }
+
+  init-api:
+    image: ${COMPOSE_PROJECT_NAME:-relaylab}-api:local
+    build:
+      context: .
+      args:
+        <<: *build-args
+        PROJECT: src/RelayLab.Api/RelayLab.Api.csproj
+    environment: *app-environment
+    command: ["dotnet", "RelayLab.Api.dll", "--init-db"]
+    depends_on:
+      sql: { condition: service_healthy }
+
+  api:
+    image: ${COMPOSE_PROJECT_NAME:-relaylab}-api:local
+    environment: *app-environment
+    command: ["dotnet", "RelayLab.Api.dll"]
+    ports:
+      - 127.0.0.1:${API_PORT:-5080}:8080
+    depends_on:
+      init-api: { condition: service_completed_successfully }
+
+  init-receiver:
+    image: ${COMPOSE_PROJECT_NAME:-relaylab}-receiver:local
+    build:
+      context: .
+      args:
+        <<: *build-args
+        PROJECT: samples/RelayLab.Receiver/RelayLab.Receiver.csproj
+    environment: &receiver-environment
+      DOTNET_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Receiver: "Server=sql,1433;Database=RelayLabReceiver;User Id=sa;Password=${SQL_PASSWORD:?Run eng/demo.ps1};Encrypt=True;TrustServerCertificate=True"
+    command: ["dotnet", "RelayLab.Receiver.dll", "--init-db"]
+    depends_on:
+      sql: { condition: service_healthy }
+
+  receiver:
+    image: ${COMPOSE_PROJECT_NAME:-relaylab}-receiver:local
+    environment: *receiver-environment
+    command: ["dotnet", "RelayLab.Receiver.dll"]
+    ports:
+      - 127.0.0.1:${RECEIVER_PORT:-5081}:8080
+    depends_on:
+      init-receiver: { condition: service_completed_successfully }
+
+  worker:
+    image: ${COMPOSE_PROJECT_NAME:-relaylab}-worker:local
+    build:
+      context: .
+      args:
+        <<: *build-args
+        PROJECT: src/RelayLab.Worker/RelayLab.Worker.csproj
+    environment: *app-environment
+    command: ["dotnet", "RelayLab.Worker.dll"]
+    depends_on:
+      init-api: { condition: service_completed_successfully }
+      receiver: { condition: service_started }
+      servicebus: { condition: service_started }
+
+volumes:
+  sql-data:

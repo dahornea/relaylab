@@ -1,0 +1,10 @@
+.git
+.codex
+.agents
+**/bin
+**/obj
+**/TestResults
+artifacts
+.env
+.env.*
+!.env.example

@@ -1,0 +1,30 @@
+# Build, verification and local infrastructure state
+**/bin/
+**/obj/
+artifacts/
+**/TestResults/
+*.trx
+*.nupkg
+*.snupkg
+.vs/
+*.user
+*.suo
+.env
+.env.*
+!.env.example
+**/appsettings.Local.json
+**/appsettings.Secrets.json
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+**/node_modules/
+**/coverage/
+.DS_Store
+Thumbs.db
+
+# Keep packages.lock.json and .terraform.lock.hcl tracked when generated.
+# Keep repository .codex/config.toml and role definitions tracked.
