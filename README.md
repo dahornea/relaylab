@@ -63,7 +63,7 @@ dotnet test .\tests\RelayLab.Tests\RelayLab.Tests.csproj -c Release --no-restore
 
 The verification script selects the active Docker context for Testcontainers. If running `dotnet test` directly on Windows requires an explicit endpoint, use `$env:DOCKER_HOST = 'npipe://./pipe/dockerDesktopLinuxEngine'` for Docker Desktop's Linux engine.
 
-See [current execution evidence](docs/STATUS.md) for actual checks. The GitHub Actions workflow is authored; remote CI and Azure deployment have not been run.
+See [current execution evidence](docs/STATUS.md) for actual checks. [GitHub Actions run 33975051554](https://github.com/dahornea/relaylab/actions/runs/33975051554) passed on Ubuntu 24.04.4 for commit `3b4e498`: locked restore, warning-clean Release build, all 21 tests (including 15 SQL/broker-backed cases), and the fresh-input container demo with cleanup. Azure deployment has not been run.
 
 ## Delivery boundaries
 

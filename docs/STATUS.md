@@ -2,10 +2,10 @@
 
 ## Current task
 
-- State: **M1 complete locally; remote finalization in progress**. The first Linux CI run passed build/tests/demo but failed generated-secret cleanup; its narrow correction is ready for rerun.
+- State: **M1 complete, committed and pushed; Linux GitHub Actions verification passed.**
 - Authorized scope: owner's 2026-09-05 M1 request and subsequent finalization request authorize normal M1 commits, push to the intended GitHub repository and actual CI verification. M2/M3, releases, package publication, access-setting changes and cloud provisioning remain unauthorized.
 - Implemented: API validation/acceptance/status, SQL transactional outbox, Service Bus publisher/consumer, recoverable claims and durable attempts, separate receiver ledger/effect, Docker demo, eng verification and authored CI.
-- Existing license and bootstrap context retained. Publication candidate includes the reviewed application, tests, scripts, CI, lock files and bootstrap guidance; generated artifacts and local secrets are excluded.
+- Repository/branch: https://github.com/dahornea/relaylab, `main`. Existing license and bootstrap context retained. The committed candidate includes the reviewed application, tests, scripts, CI, lock files and bootstrap guidance; generated artifacts and local secrets are excluded and intentional synthetic test/emulator values are preserved.
 
 ## Environment and versions
 
@@ -31,19 +31,30 @@
 - First remote CI: implementation commit `f47445b376253a12be42ace09cd68f6321d563ef` pushed normally to main; [run 33974639863](https://github.com/dahornea/relaylab/actions/runs/33974639863) failed overall during cleanup. Actual Ubuntu 24.04.4 / SDK 10.0.400 execution passed locked restore, warning-clean Release build, all 21 tests (0 failed/skipped) and the fresh-input demo (Delivered, one attempt/effect, repeat 200). Logs/TRX were downloaded and inspected under ignored artifacts/github/33974639863.
 - Concrete CI failure: PowerShell on Unix treats `.env` as hidden, so plain Remove-Item refused to delete it after successful Compose resource cleanup. The demo now uses `Remove-Item -LiteralPath $envFile -Force` for that one generated file. A focused Linux PowerShell 7.6.4 check in the selected SDK container reproduced the original failure and executed the exact corrected script statement successfully; artifacts/publication/unix-env-cleanup.log records the result. No application code or integration tests were changed.
 - Azure deployment: NOT RUN; M3 requires its own request and resource approval.
-- Linux-host xUnit execution is now verified by the first remote run, including all real SQL/broker cases; overall workflow success still requires the cleanup correction to pass remotely. Windows local and Linux container demo evidence above remains valid.
+- Linux-host xUnit execution and complete workflow success are now verified by the passing correction run below. Windows local and Linux container demo evidence above remains valid; unrelated local suites were not repeated for publication.
+
+## Passing remote CI and commit identity
+
+- Initial implementation commit: `f47445b376253a12be42ace09cd68f6321d563ef` — `feat: implement RelayLab M1 webhook delivery`.
+- Verified correction and tested implementation state: `3b4e498239c4173d1d84807c94f1e6fabe306253` — `fix: remove generated demo secrets on Linux`. This normal follow-up commit fixes cleanup without changing the application or tests.
+- **Passing run:** [33975051554](https://github.com/dahornea/relaylab/actions/runs/33975051554), push event on main, tested exactly `3b4e498239c4173d1d84807c94f1e6fabe306253`, completed 2026-09-05. [Verify job](https://github.com/dahornea/relaylab/actions/runs/33975051554/job/101330168538) ran on GitHub-hosted **Ubuntu 24.04.4**, image `ubuntu-24.04`, with **SDK 10.0.400** and Linux PowerShell.
+- Job logs and downloaded TRX confirm locked restore; Release build with **0 warnings, 0 errors**; **21 tests executed/passed, 0 failed, 0 skipped**, including all **15 SQL/broker-backed cases** and 6 validation cases. The test host ran on Linux, not just its dependencies. Results include concurrency, trigger-observed rollback, backlog, receiver restart deduplication, non-2xx/unknown timeout outcomes, terminal redelivery, expired claims, dead letters and real SQL/broker send/receive.
+- Fresh-input demo rebuilt/published all three applications in Linux containers from hash-checked checkout inputs. Delivery `f9fe9c29-1127-451b-8f67-1e40622df255` reached **Delivered**, with **one attempt, one receiver effect**, and identical resubmission **200**. Owned containers/network/SQL volume and generated `.env` cleanup completed; the complete verification entry point exited successfully.
+- Logs, TRX, input manifest and demo JSON were inspected from the run's `m1-verification` artifact. Downloaded local evidence is ignored under `artifacts/github/33975051554`; CI artifact retention is seven days. The run URL and tested commit identify remote evidence independently of local files.
+- This README/STATUS evidence update is a **later documentation-only change**. It does not alter the application, tests, workflow or runtime configuration tested at `3b4e498`; evidence is tied to that implementation commit rather than implicitly to every later HEAD.
+- The passing run emitted a nonblocking warning that pinned v4 actions declare Node 20; GitHub executed them with Node 24. The actions and all workflow steps succeeded.
 
 ## Review and remaining limits
 
 - Read-only reviewer inspected source, intended untracked files, contracts, CI/scripts, TRX, build and demo logs. Verdict: no concrete M1 blocker; bounded review judgment, not proof of correctness.
 - Its optional atomicity-oracle improvement was implemented and the affected real SQL check passed. No unresolved review finding remains.
-- Local verification checks confirmed the existing LICENSE blob is unchanged, generated `.env`/artifacts are ignored, and no isolated verification containers or SQL volumes remain. Finalization now authorizes normal commit/push and CI execution; no access settings or cloud resources are changed.
+- Prospective-commit review covered all 68 candidate files, including untracked inputs. Credential/private-path/generated-file checks passed, LICENSE remained byte-identical, and publication used normal commits/pushes without rewriting history or changing repository access settings. Generated `.env`/artifacts remain ignored and isolated verification containers/SQL volumes were cleaned up.
 - M1 has one normal HTTP attempt, recoverable interrupted claims and outbox transport retries. Scheduled retries/replay, automatic dead-letter reconciliation, competing-worker crash matrices and telemetry are M2 work. Published work can remain incomplete after emulator restart or broker exhaustion; inspect status warnings and preserved dead letters. Receiver cooperation is necessary for idempotent effects.
 - Local schema initialization uses EnsureCreated and is not a schema-upgrade mechanism. SQL CU14 is the tested local compatibility baseline, not a current production security recommendation. Authentication, identity, migrations, cloud operations and Azure acceptance remain M3 work.
 
 ## Next step
 
-Commit/push the verified cleanup correction normally, inspect its GitHub Actions run, and record final tested commit/results in a documentation-only update. M2/M3 require a separate request.
+Run `pwsh -NoProfile -File ./eng/demo.ps1` to inspect M1; `pwsh -NoProfile -File ./eng/verify.ps1` is the full verification entry point. M2/M3 require a separate owner request. No release, package publication or Azure resources were created by this task.
 
 ## Update convention
 
