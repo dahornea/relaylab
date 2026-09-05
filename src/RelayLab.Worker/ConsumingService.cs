@@ -7,7 +7,7 @@ using RelayLab.Core;
 namespace RelayLab.Worker;
 
 public sealed class ConsumingService(ServiceBusClient bus, DeliveryProcessor deliveries, WorkerSettings settings,
-    ILogger<ConsumingService> logger) : BackgroundService
+    ILogger<ConsumingService> logger, WorkerBoundary boundary) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -39,6 +39,7 @@ public sealed class ConsumingService(ServiceBusClient bus, DeliveryProcessor del
                 return;
             }
             var reason = await deliveries.ProcessAsync(work, ct);
+            await boundary.HitAsync("BeforeComplete", work.WorkId, ct);
             if (reason is not null)
                 await args.DeadLetterMessageAsync(args.Message, reason, "Work does not match a current delivery.", ct);
             else

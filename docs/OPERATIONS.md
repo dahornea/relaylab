@@ -8,7 +8,7 @@ Author one GitHub Actions workflow for a Linux Docker-capable runner. Use tested
 
 Align Compose and tests on images, queue configuration and application prerequisites. Health checks and startup readiness must reflect required dependencies. Supply a local .env.example with placeholders and documented generation/setup of local secrets. Bind host demo ports to loopback. Avoid committing credentials or storing dependency image copies in Git.
 
-Implemented entry points: `eng/verify.ps1` and `eng/demo.ps1`; versions live in `infra/versions.json`. Compose checks SQL with sqlcmd; the demo polls actual API/receiver database readiness and emulator `/health` before starting the worker. Explicit local initialization services run `--init-db` once before the application services start. Do not bypass these readiness steps on the first M1 delivery, which has no scheduled HTTP retry.
+Implemented entry points: `eng/verify.ps1` and `eng/demo.ps1`; versions live in `infra/versions.json`. Compose checks SQL with sqlcmd; the demo polls API/receiver database readiness, emulator `/health` and the dashboard before starting work. Explicit local initialization services run `--init-db` before application startup. M2 initialization requires a fresh M2 schema and rejects the older M1 schema; it never silently upgrades or erases data. Controlled migrations remain M3 work.
 
 The authored `.github/workflows/ci.yml` uses an Ubuntu 24.04 Docker-capable runner, the selected SDK, read-only repository permissions and commit-pinned official actions. It invokes the same verification script, retaining selected TRX/log diagnostics for seven days. It does not upload `.env` or complete fresh candidate directories. Remote execution is recorded only in STATUS when it actually occurs.
 
@@ -17,6 +17,25 @@ The authored `.github/workflows/ci.yml` uses an Ubuntu 24.04 Docker-capable runn
 Export OpenTelemetry traces across acceptance, outbox publishing, message consumption and outbound HTTP. Record counters/histograms for pending work, attempts, failures and latency. Do not use delivery IDs as metric labels; they belong in trace/log context. Test propagation rather than assuming ambient HTTP context crosses a queue automatically.
 
 Keep payloads, connection strings and signing secrets out of telemetry. Durable SQL history must remain useful without the telemetry collector. Record a small runbook for backlog, receiver failure, stale claim and terminal failure/replay.
+
+Implemented viewer: standalone Aspire 13.5.2, frontend port 18888 published to loopback with anonymous local access. OTLP gRPC on container port 18889 is internal to Compose. API, worker and receiver export manual lifecycle spans and metrics via OpenTelemetry 1.18.0. No additional collector, custom frontend or external telemetry account is needed. The trace parent is stored with the accepted delivery and used explicitly across outbox, retry and replay; receiver HTTP context propagates separately.
+
+Worker instruments: `relaylab.pending` (SQL count of Pending, including scheduled future work), `relaylab.attempt.started`, `relaylab.attempt.outcomes` with bounded outcome tags, `relaylab.publications` with sent/unavailable tags, and `relaylab.http.duration` in seconds. API exposes accepted/replays counters; receiver exposes newly committed effects. Pending is a per-worker observation of shared SQL, not additive across replicas. Counters/spans may be lost on a crash, and an Interrupted transition records uncertainty rather than inventing an HTTP end time.
+
+The HTTP histogram uses explicit second-valued boundaries from 5 ms through 20 seconds. Viewer percentiles are bucket estimates, not exact individual durations; use the webhook span for an individual request duration.
+
+Local runbook:
+
+| Condition | Inspect and act |
+| --- | --- |
+| Backlog | GET status shows current work, publication attempts and next eligibility. Restore SQL/broker connectivity and a running worker; its one-second scheduler republishes current Pending signals periodically. |
+| Receiver failure | Inspect attempt status/category. Resolve the configured destination; transient categories retry within the persisted budget. Nonretryable responses end the generation. |
+| Expired claim | Status warns of unknown remote outcome. Recovery consumes the interrupted slot and schedules another or exhausts. Do not rewrite SQL in normal operation; deterministic SQL-time changes belong only to the tests. |
+| Terminal Failed | Inspect history and the possibility of an existing receiver effect. POST replay with a new stable key; repeat that key after a lost response. |
+| Broker DLQ | Run demo `-Action DeadLetters` to peek 50 safe IDs/reasons. SQL handles current Pending intent independently; malformed/unknown signals require investigation and are not silently removed. |
+| Viewer outage | Delivery/status continue. Restore Aspire to collect new diagnostics; lost buffered data is not reconstructed from SQL. |
+
+The sample receiver alone has startup modes Acknowledge, Reject, CommitThenAbortOnce and CommitThenWaitOnce. The latter two apply only to a newly inserted durable receipt; duplicate receipts acknowledge normally even after process restart. The demo sets these through Compose environment and recreates the sample. No fault controls are exposed through production ingress.
 
 ## M3: prepare before provisioning
 

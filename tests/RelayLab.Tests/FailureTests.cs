@@ -21,7 +21,7 @@ public sealed class FailureTests(Infrastructure infrastructure)
     [InlineData(true)]
     public async Task One_failed_HTTP_attempt_is_durable_and_terminal_even_on_broker_redelivery(bool commitThenWithhold)
     {
-        await using var runtime = new TestRuntime(infrastructure);
+        await using var runtime = new TestRuntime(infrastructure, maxAttempts: 1);
         await runtime.StartAsync();
         var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var builder = WebApplication.CreateBuilder();
@@ -49,7 +49,7 @@ public sealed class FailureTests(Infrastructure infrastructure)
             if (commitThenWithhold) await committed.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var delivery = await runtime.WaitForAsync(id, "Failed");
             Assert.Equal(commitThenWithhold ? "Unknown" : "ResponseReceived", delivery.RemoteOutcome);
-            Assert.Equal(commitThenWithhold ? "Timeout" : "HttpRejected", delivery.LastOutcome);
+            Assert.Equal("RetryExhausted", delivery.LastOutcome);
             await runtime.RepublishAsync(id);
             await infrastructure.WaitUntilQueueEmptyAsync();
             await runtime.StopWorkerAsync();

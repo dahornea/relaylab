@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 namespace RelayLab.Worker;
 
 public sealed record WorkerSettings(Uri Destination, string Queue, int HttpTimeoutSeconds = 10,
-    int LeaseSeconds = 30, int MaxConcurrentCalls = 2, int PublishRetrySeconds = 3)
+    int LeaseSeconds = 30, int MaxConcurrentCalls = 2, int PublishRetrySeconds = 3, int ReconcileSeconds = 30)
 {
     public static WorkerSettings From(IConfiguration configuration)
     {
@@ -14,11 +14,13 @@ public sealed record WorkerSettings(Uri Destination, string Queue, int HttpTimeo
             configuration.GetValue("RelayLab:HttpTimeoutSeconds", 10),
             configuration.GetValue("RelayLab:LeaseSeconds", 30),
             configuration.GetValue("RelayLab:MaxConcurrentCalls", 2),
-            configuration.GetValue("RelayLab:PublishRetrySeconds", 3));
+            configuration.GetValue("RelayLab:PublishRetrySeconds", 3),
+            configuration.GetValue("RelayLab:ReconcileSeconds", 30));
         if (settings.Destination.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(settings.Destination.UserInfo) ||
             !string.IsNullOrEmpty(settings.Destination.Fragment) || settings.HttpTimeoutSeconds is < 1 or > 20 ||
             settings.LeaseSeconds < settings.HttpTimeoutSeconds + 10 || settings.LeaseSeconds > 45 ||
-            settings.MaxConcurrentCalls is < 1 or > 4 || settings.PublishRetrySeconds is < 1 or > 30 || string.IsNullOrWhiteSpace(settings.Queue))
+            settings.MaxConcurrentCalls is < 1 or > 4 || settings.PublishRetrySeconds is < 1 or > 30 ||
+            settings.ReconcileSeconds is < 5 or > 300 || string.IsNullOrWhiteSpace(settings.Queue))
             throw new InvalidOperationException("Invalid RelayLab destination or processing bounds.");
         return settings;
     }

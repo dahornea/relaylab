@@ -50,7 +50,7 @@ Receive in PeekLock mode with explicit settlement. A previously Delivered item i
 
 The receiver commits a unique receipt for DeliveryId and its example effect in one transaction. Returning success follows that commit. It must recognize duplicate DeliveryId even after its own restart. The same ID with conflicting content is a protocol conflict, not a new effect.
 
-## M1 failure policy
+## Historical M1 failure policy
 
 M1 demonstrates the happy path, acceptance idempotency and durable backlog during publisher unavailability. A definitive non-2xx HTTP response or timeout is recorded as Failed after the single M1 HTTP attempt; a timeout's recipient outcome is marked unknown. There is no full HTTP retry schedule/replay feature until M2.
 
@@ -63,6 +63,10 @@ The application database owns retry eligibility, attempt history and terminal ou
 Choose the smallest durable scheduling mechanism and document the crash windows before implementing it. Bound attempts, timeout, delay/backoff and concurrency. Distinguish HTTP retries, SDK transport retries and broker redeliveries so they do not multiply unnoticed. Terminal application failure and broker dead-letter state are related but not interchangeable. Make replay of an exhausted delivery idempotent and preserve the stable recipient identity and prior history.
 
 Test competing worker instances in M2. Persistent claims and retry eligibility must recover after process termination. Bounded recovery assumes durable dependencies retain state and become available within the relevant retention limits; it does not guarantee success against a permanently failing recipient.
+
+Implemented M2 uses the SQL outbox as both work history and durable publication schedule. Delivery carries the current work ID, generation, attempt slot, fixed generation budget and next eligibility. Each current Pending slot can publish repeatedly until claimed; each slot can start at most one HTTP execution. Expired claims advance to a new retry slot or terminal Failed. A short fenced SQL transaction updates the attempt and delivery and inserts any next outbox row before broker settlement. Replay receipts serialize on the delivery row and preserve the original result for repeated keys. See CONTRACTS for exact bounds and DECISIONS for the crash windows.
+
+The worker polls SQL every second for expired claims and eligible publication. Reconciliation periodically republishes current Pending work even when an earlier signal expired or entered the DLQ. It keeps invalid/dead-letter messages for inspection. Stable receiver deduplication remains necessary because SQL fencing cannot cancel a request already committed at the recipient.
 
 ## Local versus cloud
 

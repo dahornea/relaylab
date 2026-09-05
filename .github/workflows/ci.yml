@@ -1,4 +1,4 @@
-name: M1 verification
+name: M2 verification
 on:
   pull_request:
   push:
@@ -17,14 +17,14 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           global-json-file: global.json
-      - name: Verify M1 including the fresh-input demo
+      - name: Verify M2 including the fresh-input failure and recovery demo
         shell: pwsh
         run: ./eng/verify.ps1
       - name: Retain verification diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: m1-verification
+          name: m2-verification
           retention-days: 7
           path: |
             artifacts/verification/

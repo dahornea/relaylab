@@ -1,77 +1,55 @@
 using System.Net.Http.Json;
+using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using RelayLab.Core;
 
 namespace RelayLab.Worker;
 
-public sealed class DeliveryProcessor(IDbContextFactory<RelayDb> databases, HttpClient http, WorkerSettings settings)
+public sealed class DeliveryProcessor(IDbContextFactory<RelayDb> databases, HttpClient http, WorkerSettings settings,
+    DeliveryTransitions transitions, WorkerBoundary boundary)
 {
-    // null means complete; a safe reason means dead-letter. Exceptions leave the message unsettled.
+    // null means complete; SQL retains the recovery path for busy, early and stale signals.
     public async Task<string?> ProcessAsync(WorkEnvelope work, CancellationToken ct)
     {
-        while (true)
+        await using var db = await databases.CreateDbContextAsync(ct);
+        var delivery = await db.Deliveries.AsNoTracking().SingleOrDefaultAsync(d => d.Id == work.DeliveryId, ct);
+        if (delivery is null) return "UnknownDelivery";
+        if (delivery.WorkId != work.WorkId || delivery.Status != "Pending") return null;
+        var owner = Guid.NewGuid();
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
         {
-            ct.ThrowIfCancellationRequested();
-            await using var db = await databases.CreateDbContextAsync(ct);
-            var delivery = await db.Deliveries.AsNoTracking().SingleOrDefaultAsync(d => d.Id == work.DeliveryId, ct);
-            if (delivery is null) return "UnknownDelivery";
-            if (delivery.WorkId != work.WorkId) return "StaleWork";
-            if (delivery.Status is "Delivered" or "Failed") return null;
-            var owner = Guid.NewGuid();
-            var attemptId = Guid.NewGuid();
-            await using (var transaction = await db.Database.BeginTransactionAsync(ct))
-            {
-                var claimed = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                    UPDATE Deliveries SET Status='Processing', LeaseOwner={owner},
-                        LeaseUntilUtc=DATEADD(second, {settings.LeaseSeconds}, SYSUTCDATETIME()), UpdatedUtc=SYSUTCDATETIME(),
-                        LastOutcome='HttpInProgress', RemoteOutcome='Unknown'
-                    WHERE Id={work.DeliveryId} AND WorkId={work.WorkId}
-                        AND (Status='Pending' OR (Status='Processing' AND LeaseUntilUtc <= SYSUTCDATETIME()))
-                    """, ct);
-                if (claimed != 1)
-                {
-                    await transaction.RollbackAsync(ct);
-                    // Wait under the broker lock, avoiding rapid abandon/redelivery exhaustion for a busy lease.
-                    await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
-                    continue;
-                }
-                await db.DeliveryAttempts.Where(a => a.DeliveryId == work.DeliveryId && a.CompletedUtc == null)
-                    .ExecuteUpdateAsync(u => u.SetProperty(a => a.Outcome, "Interrupted")
-                        .SetProperty(a => a.FailureCategory, "LeaseExpired").SetProperty(a => a.RemoteOutcome, "Unknown"), ct);
-                db.DeliveryAttempts.Add(new DeliveryAttempt
-                {
-                    Id = attemptId, DeliveryId = work.DeliveryId, WorkId = work.WorkId, StartedUtc = await db.UtcNowAsync(ct)
-                });
-                await db.SaveChangesAsync(ct);
-                await transaction.CommitAsync(ct);
-            }
-
-            // The durable Started record exists before HTTP; no SQL transaction crosses this boundary.
-            var result = await SendAsync(delivery, ct);
-            await using var commit = await db.Database.BeginTransactionAsync(ct);
-            var changed = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                UPDATE Deliveries SET Status={result.SuccessStatus}, UpdatedUtc=SYSUTCDATETIME(),
-                    LastOutcome={result.Outcome}, RemoteOutcome={result.RemoteOutcome}, LeaseOwner=NULL, LeaseUntilUtc=NULL
-                WHERE Id={work.DeliveryId} AND WorkId={work.WorkId} AND Status='Processing'
-                    AND LeaseOwner={owner} AND LeaseUntilUtc > SYSUTCDATETIME()
+            var claimed = await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE Deliveries SET Status='Processing', LeaseOwner={owner},
+                    LeaseUntilUtc=DATEADD(second, {settings.LeaseSeconds}, SYSUTCDATETIME()), UpdatedUtc=SYSUTCDATETIME(),
+                    LastOutcome='HttpInProgress', RemoteOutcome='Unknown'
+                WHERE Id={work.DeliveryId} AND WorkId={work.WorkId} AND Status='Pending' AND NextAttemptUtc <= SYSUTCDATETIME()
                 """, ct);
-            if (changed != 1)
+            if (claimed != 1) return null;
+            db.DeliveryAttempts.Add(new DeliveryAttempt
             {
-                await commit.RollbackAsync(ct);
-                throw new InvalidOperationException("The attempt lease expired before its result could be persisted.");
-            }
-            var now = await db.UtcNowAsync(ct);
-            await db.DeliveryAttempts.Where(a => a.Id == attemptId).ExecuteUpdateAsync(u =>
-                u.SetProperty(a => a.CompletedUtc, now).SetProperty(a => a.Outcome, result.Outcome)
-                    .SetProperty(a => a.HttpStatus, result.HttpStatus).SetProperty(a => a.FailureCategory, result.FailureCategory)
-                    .SetProperty(a => a.RemoteOutcome, result.RemoteOutcome), ct);
-            await commit.CommitAsync(ct);
-            return null;
+                Id = Guid.NewGuid(), DeliveryId = work.DeliveryId, WorkId = work.WorkId, Generation = delivery.Generation,
+                AttemptNumber = delivery.AttemptNumber, StartedUtc = await db.UtcNowAsync(ct)
+            });
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            Telemetry.Attempts.Add(1);
         }
+        await boundary.HitAsync("AfterClaim", work.WorkId, ct);
+        using var activity = Telemetry.Start("attempt", delivery, ActivityKind.Consumer);
+        // No SQL transaction or held connection spans the outbound HTTP call.
+        var result = await SendAsync(delivery, ct);
+        activity?.SetTag("relaylab.outcome", result.Outcome);
+        if (!result.Success) activity?.SetStatus(ActivityStatusCode.Error, result.Outcome);
+        await boundary.HitAsync("AfterHttp", work.WorkId, ct);
+        var committed = await transitions.FinishAsync(delivery, owner, result, false, ct);
+        await boundary.HitAsync(committed ? "AfterTransition" : "StaleCompletion", work.WorkId, ct);
+        return null;
     }
 
     private async Task<HttpOutcome> SendAsync(Delivery delivery, CancellationToken ct)
     {
+        using var activity = Telemetry.Activities.StartActivity("webhook", ActivityKind.Client);
+        var started = Stopwatch.GetTimestamp();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(settings.HttpTimeoutSeconds));
         using var request = new HttpRequestMessage(HttpMethod.Post, settings.Destination)
@@ -79,23 +57,22 @@ public sealed class DeliveryProcessor(IDbContextFactory<RelayDb> databases, Http
             Content = JsonContent.Create(delivery.ToRequest(), options: EventContract.Json)
         };
         request.Headers.Add("X-RelayLab-Delivery-Id", delivery.Id.ToString("D"));
+        if (activity?.Id is { } parent) request.Headers.TryAddWithoutValidation("traceparent", parent);
         try
         {
-            // Only the status/headers matter. No response body is read, buffered or drained.
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             return response.IsSuccessStatusCode
-                ? new("Delivered", "Acknowledged", (int)response.StatusCode, null, "Acknowledged")
-                : new("Failed", "HttpRejected", (int)response.StatusCode, "NonSuccessStatus", "ResponseReceived");
+                ? new(true, false, "Acknowledged", (int)response.StatusCode, null, "Acknowledged")
+                : new(false, RetryPolicy.IsRetryable((int)response.StatusCode), "HttpRejected", (int)response.StatusCode, "NonSuccessStatus", "ResponseReceived");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return new("Failed", "Timeout", null, "DeadlineExceeded", "Unknown");
+            return new(false, true, "Timeout", null, "DeadlineExceeded", "Unknown");
         }
         catch (HttpRequestException)
         {
-            return new("Failed", "TransportFailure", null, "HttpTransport", "Unknown");
+            return new(false, true, "TransportFailure", null, "HttpTransport", "Unknown");
         }
+        finally { Telemetry.HttpDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds); }
     }
-
-    private sealed record HttpOutcome(string SuccessStatus, string Outcome, int? HttpStatus, string? FailureCategory, string RemoteOutcome);
 }

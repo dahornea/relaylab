@@ -12,16 +12,17 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RelayLab.Core;
 using RelayLab.Receiver;
+using RelayLab.Worker;
 using Xunit;
 
 namespace RelayLab.Tests;
 
-public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acceptanceObserver = null) : IAsyncDisposable
+public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acceptanceObserver = null, int maxAttempts = 3, int retryBaseSeconds = 2, string? telemetryEndpoint = null) : IAsyncDisposable
 {
     private readonly string databaseName = "RelayLabTest_" + Guid.NewGuid().ToString("N");
     private WebApplication? api;
     private WebApplication? receiver;
-    private IHost? worker;
+    private readonly List<IHost> workers = [];
     public HttpClient Api { get; private set; } = null!;
     public HttpClient Receiver { get; private set; } = null!;
     public string RelayConnection => new SqlConnectionStringBuilder(infrastructure.SqlConnection) { InitialCatalog = databaseName }.ConnectionString;
@@ -46,7 +47,10 @@ public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acc
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:RelayLab"] = RelayConnection,
-            ["ConnectionStrings:Receiver"] = ReceiverConnection
+            ["ConnectionStrings:Receiver"] = ReceiverConnection,
+            ["RelayLab:MaxAttempts"] = maxAttempts.ToString(),
+            ["RelayLab:RetryBaseSeconds"] = retryBaseSeconds.ToString(),
+            ["OTEL_EXPORTER_OTLP_ENDPOINT"] = telemetryEndpoint
         });
     }
 
@@ -85,32 +89,41 @@ public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acc
         await StartReceiverAsync();
     }
 
-    public async Task StartWorkerAsync(Uri? destination = null, int timeoutSeconds = 10)
+    public async Task<IHost> StartWorkerAsync(Uri? destination = null, int timeoutSeconds = 10, WorkerBoundary? boundary = null, string? busConnection = null, bool start = true, int concurrency = 2)
     {
-        worker = RelayLab.Worker.Program.Build([], builder =>
+        var worker = RelayLab.Worker.Program.Build([], builder =>
         {
             builder.Environment.EnvironmentName = "Testing";
             builder.Logging.ClearProviders();
             builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:RelayLab"] = RelayConnection,
-                ["ConnectionStrings:ServiceBus"] = infrastructure.BusConnection,
+                ["ConnectionStrings:ServiceBus"] = busConnection ?? infrastructure.BusConnection,
                 ["RelayLab:DestinationUrl"] = (destination ?? new Uri(Receiver.BaseAddress!, "/webhooks")).AbsoluteUri,
                 ["RelayLab:HttpTimeoutSeconds"] = timeoutSeconds.ToString(),
-                ["RelayLab:Queue"] = "deliveries"
+                ["RelayLab:MaxConcurrentCalls"] = concurrency.ToString(),
+                ["RelayLab:Queue"] = "deliveries",
+                ["OTEL_EXPORTER_OTLP_ENDPOINT"] = telemetryEndpoint
             });
+            if (boundary is not null) builder.Services.AddSingleton(boundary);
         });
-        await worker.StartAsync();
+        workers.Add(worker);
+        if (start) await worker.StartAsync();
+        return worker;
     }
 
     public async Task StopWorkerAsync()
     {
-        if (worker is null) return;
+        foreach (var worker in workers.ToArray()) await StopWorkerAsync(worker);
+    }
+
+    public async Task StopWorkerAsync(IHost worker)
+    {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await worker.StopAsync(deadline.Token);
         if (worker is IAsyncDisposable disposable) await disposable.DisposeAsync();
         else worker.Dispose();
-        worker = null;
+        workers.Remove(worker);
     }
 
     public Task<HttpResponseMessage> SubmitAsync(string key, string document = "doc-001")
@@ -163,14 +176,22 @@ public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acc
         Assert.Fail(failure);
     }
 
-    public async Task RepublishAsync(Guid id)
+    public Task<HttpResponseMessage> ReplayAsync(Guid id, string key)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/deliveries/{id}/replay");
+        request.Headers.Add("Idempotency-Key", key);
+        return SendAndDisposeAsync(Api, request);
+    }
+
+    public async Task RepublishAsync(Guid id, Guid? workId = null)
     {
         await using var db = OpenRelay();
         var delivery = await db.Deliveries.AsNoTracking().SingleAsync(d => d.Id == id);
         await using var bus = RelayLab.Worker.WorkerSettings.CreateBus(infrastructure.BusConnection);
         await using var sender = bus.CreateSender("deliveries");
-        await sender.SendMessageAsync(new ServiceBusMessage(JsonSerializer.Serialize(new WorkEnvelope(1, id, delivery.WorkId), EventContract.Json))
-        { MessageId = delivery.WorkId.ToString("D") });
+        var identity = workId ?? delivery.WorkId;
+        await sender.SendMessageAsync(new ServiceBusMessage(JsonSerializer.Serialize(new WorkEnvelope(1, id, identity), EventContract.Json))
+        { MessageId = identity.ToString("D") });
     }
 
     public async ValueTask DisposeAsync()
@@ -180,6 +201,7 @@ public sealed class TestRuntime(Infrastructure infrastructure, IInterceptor? acc
         Receiver?.Dispose();
         if (api is not null) { await api.StopAsync(); await api.DisposeAsync(); }
         if (receiver is not null) { await receiver.StopAsync(); await receiver.DisposeAsync(); }
+        await infrastructure.DrainAsync(); // Finish owned locked signals before deleting the database or starting the next case.
         await using (var db = OpenRelay()) await db.Database.EnsureDeletedAsync();
         await using (var db = OpenReceiver()) await db.Database.EnsureDeletedAsync();
     }

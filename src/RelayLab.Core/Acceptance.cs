@@ -4,10 +4,11 @@ namespace RelayLab.Core;
 
 public sealed record AcceptanceResult(Delivery Delivery, bool Created, bool Conflict);
 
-public sealed class Acceptance(IDbContextFactory<RelayDb> databases)
+public sealed class Acceptance(IDbContextFactory<RelayDb> databases, RetryPolicy policy)
 {
     public async Task<AcceptanceResult> AcceptAsync(string key, EventRequest request, CancellationToken ct)
     {
+        using var activity = Telemetry.Activities.StartActivity("accept");
         await using var db = await databases.CreateDbContextAsync(ct);
         var existing = await db.Deliveries.AsNoTracking().SingleOrDefaultAsync(d => d.IdempotencyKey == key, ct);
         if (existing is not null)
@@ -19,7 +20,8 @@ public sealed class Acceptance(IDbContextFactory<RelayDb> databases)
         {
             Id = Guid.NewGuid(), WorkId = Guid.NewGuid(), IdempotencyKey = key,
             DestinationId = request.DestinationId!, EventType = request.EventType!, DocumentId = request.Data!.DocumentId!,
-            AcceptedUtc = now, UpdatedUtc = now
+            AcceptedUtc = now, UpdatedUtc = now, NextAttemptUtc = now,
+            MaxAttempts = policy.MaxAttempts, RetryBaseSeconds = policy.BaseSeconds, TraceParent = activity?.Id
         };
         try
         {
@@ -31,6 +33,8 @@ public sealed class Acceptance(IDbContextFactory<RelayDb> databases)
             });
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
+            activity?.SetTag("relaylab.delivery.id", delivery.Id.ToString("D"));
+            Telemetry.Accepted.Add(1);
             return new(delivery, true, false);
         }
         catch (DbUpdateException error) when (SqlErrors.IsUniqueViolation(error))

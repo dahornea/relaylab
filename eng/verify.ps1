@@ -34,7 +34,7 @@ try {
     Invoke-Check 'restore' 'dotnet' @('restore', 'RelayLab.slnx', '--locked-mode', '--configfile', 'NuGet.Config')
     Invoke-Check 'build' 'dotnet' @('build', 'RelayLab.slnx', '-c', 'Release', '--no-restore')
     Invoke-Check 'tests' 'dotnet' @('test', 'tests/RelayLab.Tests/RelayLab.Tests.csproj', '-c', 'Release', '--no-build', '--no-restore',
-        '--logger', 'trx;LogFileName=m1.trx', '--results-directory', (Join-Path $artifacts 'test-results'), '--blame-hang-timeout', '5m')
+        '--logger', 'trx;LogFileName=m2.trx', '--results-directory', (Join-Path $artifacts 'test-results'), '--blame-hang-timeout', '5m')
     # The Docker CLI expects its own Windows URI form; normalization applies only to Testcontainers.
     $env:DOCKER_HOST = $originalDockerHost
 
@@ -59,15 +59,20 @@ try {
     $project = 'relaylab-verify-' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
     $demo = Join-Path $candidate 'eng/demo.ps1'
     try {
-        & $demo -ProjectName $project -ApiPort (Get-FreePort) -ReceiverPort (Get-FreePort) -BrokerHealthPort (Get-FreePort) 2>&1 |
+        & $demo -ProjectName $project -ApiPort (Get-FreePort) -ReceiverPort (Get-FreePort) -BrokerHealthPort (Get-FreePort) -DashboardPort (Get-FreePort) 2>&1 |
             Tee-Object -FilePath (Join-Path $logs 'fresh-demo.log')
         Copy-Item -LiteralPath (Join-Path $candidate 'artifacts/demo/result.json') -Destination (Join-Path $logs 'fresh-demo-result.json')
+        Copy-Item -LiteralPath (Join-Path $candidate 'artifacts/demo/recovery-result.json') -Destination (Join-Path $logs 'fresh-recovery-result.json')
+        Copy-Item -LiteralPath (Join-Path $candidate 'artifacts/demo/recovery-trace.json') -Destination (Join-Path $logs 'fresh-recovery-trace.json')
+        foreach ($state in @('exhausted', 'interrupted', 'recovered')) {
+            Copy-Item -LiteralPath (Join-Path $candidate "artifacts/demo/$state.json") -Destination (Join-Path $logs "$state.json")
+        }
     } finally {
         if (Test-Path -LiteralPath (Join-Path $candidate '.env')) {
             & $demo -Action Reset -ProjectName $project 2>&1 | Tee-Object -FilePath (Join-Path $logs 'fresh-demo-cleanup.log')
         }
     }
-    Write-Host 'M1 verification passed: locked restore, warning-clean build, SQL/broker tests, and fresh-input container demo.'
+    Write-Host 'M2 verification passed: locked restore, warning-clean build, SQL/broker failure tests, fresh-input recovery demo and Aspire trace ingestion.'
 } finally {
     $env:DOCKER_HOST = $originalDockerHost
     Set-Location -LiteralPath $originalLocation

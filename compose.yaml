@@ -8,12 +8,22 @@ x-app-environment: &app-environment
   ConnectionStrings__ServiceBus: "Endpoint=sb://servicebus:5672;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
   RelayLab__DestinationUrl: http://receiver:8080/webhooks
   RelayLab__Queue: deliveries
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://dashboard:18889
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_METRIC_EXPORT_INTERVAL: 1000
 
 x-build-args: &build-args
   SDK_IMAGE: ${SDK_IMAGE:?Run eng/demo.ps1}
   RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run eng/demo.ps1}
 
 services:
+  dashboard:
+    image: ${DASHBOARD_IMAGE:-mcr.microsoft.com/dotnet/aspire-dashboard:13.5.2}
+    environment:
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - 127.0.0.1:${DASHBOARD_PORT:-18888}:18888
+
   sql:
     image: ${SQL_IMAGE:?Run eng/demo.ps1}
     environment:
@@ -73,6 +83,10 @@ services:
       DOTNET_ENVIRONMENT: Development
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
+      Receiver__Mode: ${RECEIVER_MODE:-Acknowledge}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://dashboard:18889
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRIC_EXPORT_INTERVAL: 1000
       ConnectionStrings__Receiver: "Server=sql,1433;Database=RelayLabReceiver;User Id=sa;Password=${SQL_PASSWORD:?Run eng/demo.ps1};Encrypt=True;TrustServerCertificate=True"
     command: ["dotnet", "RelayLab.Receiver.dll", "--init-db"]
     depends_on:

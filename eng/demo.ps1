@@ -2,10 +2,12 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Run', 'Down', 'Reset', 'DeadLetters')][string]$Action = 'Run',
+    [ValidateSet('Happy', 'Recovery')][string]$Scenario = 'Recovery',
     [ValidatePattern('^[a-z][a-z0-9-]+$')][string]$ProjectName = 'relaylab',
     [int]$ApiPort = 5080,
     [int]$ReceiverPort = 5081,
-    [int]$BrokerHealthPort = 5300
+    [int]$BrokerHealthPort = 5300,
+    [int]$DashboardPort = 18888
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -37,6 +39,7 @@ if (!(Test-Path -LiteralPath $envFile)) {
         "SQL_PASSWORD=$password",
         "SQL_IMAGE=$($versions.sql)", "SERVICEBUS_IMAGE=$($versions.serviceBus)",
         "SDK_IMAGE=$($versions.sdk)", "RUNTIME_IMAGE=$($versions.aspnet)",
+        "DASHBOARD_IMAGE=$($versions.dashboard)", "DASHBOARD_PORT=$DashboardPort",
         "API_PORT=$ApiPort", "RECEIVER_PORT=$ReceiverPort", "BROKER_HEALTH_PORT=$BrokerHealthPort"
     ) | Set-Content -LiteralPath $envFile -Encoding utf8
     if (!$IsWindows) { & chmod 600 $envFile; if ($LASTEXITCODE -ne 0) { throw 'Could not restrict local secret file permissions.' } }
@@ -44,11 +47,12 @@ if (!(Test-Path -LiteralPath $envFile)) {
 # Use saved ports when rerunning a retained demo. Never print the password.
 $saved = @{}
 foreach ($line in Get-Content -LiteralPath $envFile) {
-    if ($line -match '^(API_PORT|RECEIVER_PORT|BROKER_HEALTH_PORT)=(\d+)$') { $saved[$Matches[1]] = [int]$Matches[2] }
+    if ($line -match '^(API_PORT|RECEIVER_PORT|BROKER_HEALTH_PORT|DASHBOARD_PORT)=(\d+)$') { $saved[$Matches[1]] = [int]$Matches[2] }
 }
 if ($saved.ContainsKey('API_PORT')) { $ApiPort = $saved['API_PORT'] }
 if ($saved.ContainsKey('RECEIVER_PORT')) { $ReceiverPort = $saved['RECEIVER_PORT'] }
 if ($saved.ContainsKey('BROKER_HEALTH_PORT')) { $BrokerHealthPort = $saved['BROKER_HEALTH_PORT'] }
+if ($saved.ContainsKey('DASHBOARD_PORT')) { $DashboardPort = $saved['DASHBOARD_PORT'] }
 
 switch ($Action) {
     'Down' { Invoke-Compose @('down', '--remove-orphans'); return }
@@ -62,14 +66,16 @@ switch ($Action) {
     'DeadLetters' { Invoke-Compose @('exec', '-T', 'worker', 'dotnet', 'RelayLab.Worker.dll', '--deadletters'); return }
 }
 
+$originalReceiverMode = $env:RECEIVER_MODE
 try {
+    $env:RECEIVER_MODE = 'Acknowledge'
     Invoke-Compose @('config', '--quiet')
     Invoke-Compose @('build', 'init-api', 'init-receiver', 'worker')
-    # Receiver and broker readiness must precede the M1 single-attempt worker.
-    Invoke-Compose @('up', '-d', 'sql', 'servicebus', 'api', 'receiver')
+    Invoke-Compose @('up', '-d', 'sql', 'servicebus', 'dashboard', 'api', 'receiver')
     Wait-Http "http://127.0.0.1:$BrokerHealthPort/health"
     Wait-Http "http://127.0.0.1:$ApiPort/health/ready"
     Wait-Http "http://127.0.0.1:$ReceiverPort/health/ready"
+    Wait-Http "http://127.0.0.1:$DashboardPort/api/telemetry/resources"
     Invoke-Compose @('up', '-d', '--no-deps', 'worker')
 
     $key = 'demo-' + [Guid]::NewGuid().ToString('N')
@@ -94,8 +100,14 @@ try {
     New-Item -ItemType Directory -Force $directory | Out-Null
     $evidence | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $directory 'result.json') -Encoding utf8
     $evidence | ConvertTo-Json
-    Write-Host "API: http://127.0.0.1:$ApiPort  Receiver: http://127.0.0.1:$ReceiverPort"
+    if ($Scenario -eq 'Recovery') {
+        & (Join-Path $PSScriptRoot 'recovery-demo.ps1') -ApiUrl "http://127.0.0.1:$ApiPort" -ReceiverUrl "http://127.0.0.1:$ReceiverPort" `
+            -DashboardUrl "http://127.0.0.1:$DashboardPort" -ComposeArguments $compose -EvidenceDirectory $directory
+    }
+    Write-Host "API: http://127.0.0.1:$ApiPort  Receiver: http://127.0.0.1:$ReceiverPort  Dashboard: http://127.0.0.1:$DashboardPort"
 } catch {
     & docker @compose logs --no-color --tail 100
     throw
+} finally {
+    $env:RECEIVER_MODE = $originalReceiverMode
 }

@@ -10,6 +10,7 @@ public sealed record WorkEnvelope(int Version, Guid DeliveryId, Guid WorkId);
 public static class EventContract
 {
     public const int BodyLimit = 4096;
+    public static bool IsValidKey(string? key) => !string.IsNullOrEmpty(key) && key.Length <= 128 && key.All(c => c >= '!' && c <= '~');
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
@@ -19,7 +20,7 @@ public static class EventContract
     public static Dictionary<string, string[]> Validate(EventRequest? request, string? key = null, bool requireKey = true)
     {
         var errors = new Dictionary<string, string[]>();
-        if (requireKey && (string.IsNullOrEmpty(key) || key.Length > 128 || key.Any(c => c < '!' || c > '~')))
+        if (requireKey && !IsValidKey(key))
             errors["Idempotency-Key"] = ["Use 1-128 visible ASCII characters without whitespace."];
         if (request?.DestinationId != "demo")
             errors["destinationId"] = ["The configured destination is demo."];

@@ -16,10 +16,15 @@ public sealed class Infrastructure : IAsyncLifetime
     private readonly INetwork network = new NetworkBuilder().Build();
     private readonly MsSqlContainer sql;
     private readonly ServiceBusContainer broker;
+    private readonly int settlementWaitSeconds;
 
     public Infrastructure()
     {
         using var versions = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "infra/versions.json")));
+        using var configuration = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "infra/ServiceBusConfig.json")));
+        var lockDuration = configuration.RootElement.GetProperty("UserConfig").GetProperty("Namespaces")[0]
+            .GetProperty("Queues")[0].GetProperty("Properties").GetProperty("LockDuration").GetString()!;
+        settlementWaitSeconds = (int)System.Xml.XmlConvert.ToTimeSpan(lockDuration).TotalSeconds + 30;
         var password = $"RL!{Guid.NewGuid():N}a9";
         sql = new MsSqlBuilder(versions.RootElement.GetProperty("sql").GetString()!)
             .WithPassword(password).WithNetwork(network).WithNetworkAliases("sql")
@@ -39,18 +44,25 @@ public sealed class Infrastructure : IAsyncLifetime
         await using var client = new ServiceBusClient(BusConnection);
         await using var receiver = client.CreateReceiver("deliveries");
         await TestRuntime.EventuallyAsync(async () => (await receiver.PeekMessagesAsync(1, fromSequenceNumber: 0)).Count == 0,
-            "Expected durable outcomes to be followed by broker settlement.");
+            "Expected durable outcomes to be followed by broker settlement after the abandoned owner's lock can expire.", settlementWaitSeconds);
     }
 
     public async Task DrainAsync()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(settlementWaitSeconds));
         await using var client = new ServiceBusClient(BusConnection);
         foreach (var subQueue in new[] { SubQueue.None, SubQueue.DeadLetter })
         {
             await using var receiver = client.CreateReceiver("deliveries", new ServiceBusReceiverOptions { SubQueue = subQueue });
-            while (await receiver.ReceiveMessageAsync(TimeSpan.FromMilliseconds(200), deadline.Token) is { } message)
-                await receiver.CompleteMessageAsync(message, deadline.Token);
+            while (true)
+            {
+                if (await receiver.ReceiveMessageAsync(TimeSpan.FromMilliseconds(200), deadline.Token) is { } message)
+                    await receiver.CompleteMessageAsync(message, deadline.Token);
+                else if ((await receiver.PeekMessagesAsync(1, fromSequenceNumber: 0, cancellationToken: deadline.Token)).Count == 0)
+                    break;
+                // Peek sees locked messages too; a stopped owner may retain its lock until expiry.
+                else await Task.Delay(100, deadline.Token);
+            }
         }
     }
 

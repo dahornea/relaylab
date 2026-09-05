@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RelayLab.Core;
@@ -39,6 +40,7 @@ public static class Program
         var builder = Host.CreateApplicationBuilder(args);
         configure?.Invoke(builder);
         LocalHosting.RequireLocal(builder.Environment);
+        Telemetry.Configure(builder.Services, builder.Configuration, "relaylab-worker");
         builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.None);
         var settings = WorkerSettings.From(builder.Configuration);
         builder.Services.AddSingleton(settings);
@@ -48,6 +50,8 @@ public static class Program
         builder.Services.AddSingleton(_ => WorkerSettings.CreateHttpClient());
         builder.Services.AddSingleton<OutboxPublisher>();
         builder.Services.AddSingleton<DeliveryProcessor>();
+        builder.Services.AddSingleton<DeliveryTransitions>();
+        builder.Services.TryAddSingleton<WorkerBoundary>();
         builder.Services.AddHostedService<PublishingService>();
         builder.Services.AddHostedService<ConsumingService>();
         return builder.Build();

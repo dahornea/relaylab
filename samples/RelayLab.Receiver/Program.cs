@@ -23,6 +23,11 @@ public static class Program
         var builder = WebApplication.CreateBuilder(args);
         configure?.Invoke(builder);
         LocalHosting.ConfigureWeb(builder);
+        Telemetry.Configure(builder.Services, builder.Configuration, "relaylab-receiver");
+        // This separate local sample is the only executable with operator-controlled fault behavior.
+        var mode = builder.Configuration["Receiver:Mode"] ?? "Acknowledge";
+        if (mode is not ("Acknowledge" or "Reject" or "CommitThenAbortOnce" or "CommitThenWaitOnce"))
+            throw new InvalidOperationException("Unknown local receiver mode.");
         builder.Services.AddDbContextFactory<ReceiverDb>(o => o.UseSqlServer(LocalHosting.Connection(builder.Configuration, "Receiver")));
         builder.Services.AddTransient<ReceiverLedger>();
         var app = builder.Build();
@@ -35,6 +40,8 @@ public static class Program
         });
         app.MapPost("/webhooks", async (HttpRequest http, ReceiverLedger ledger, CancellationToken ct) =>
         {
+            System.Diagnostics.ActivityContext.TryParse(http.Headers["traceparent"].FirstOrDefault(), null, out var parent);
+            using var activity = Telemetry.Activities.StartActivity("receive", System.Diagnostics.ActivityKind.Server, parent);
             var ids = http.Headers["X-RelayLab-Delivery-Id"];
             if (ids.Count != 1 || !Guid.TryParse(ids[0], out var id) || id == Guid.Empty)
                 return LocalHosting.Problem(400, "invalid_delivery_id", "Supply X-RelayLab-Delivery-Id as a nonempty UUID.");
@@ -42,9 +49,20 @@ public static class Program
             if (error is not null) return error;
             var errors = EventContract.Validate(request, requireKey: false);
             if (errors.Count > 0) return LocalHosting.Validation(errors);
-            return await ledger.RecordAsync(id, request!, ct)
-                ? Results.Ok(new { deliveryId = id, acknowledged = true })
-                : LocalHosting.Problem(409, "receipt_conflict", "This delivery ID was recorded with different content.");
+            activity?.SetTag("relaylab.delivery.id", id.ToString("D"));
+            if (mode == "Reject") return Results.StatusCode(503);
+            var receipt = await ledger.RecordDetailedAsync(id, request!, ct);
+            if (!receipt.Matches) return LocalHosting.Problem(409, "receipt_conflict", "This delivery ID was recorded with different content.");
+            if (receipt.Created && mode == "CommitThenWaitOnce")
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            if (receipt.Created && mode == "CommitThenAbortOnce")
+            {
+                http.HttpContext.Abort();
+                return Results.Empty;
+            }
+            return Results.Ok(new { deliveryId = id, acknowledged = true });
         });
         // Local sample diagnostic endpoint. The delivery service never calls this.
         app.MapGet("/receipts/{id:guid}", async (Guid id, IDbContextFactory<ReceiverDb> databases, CancellationToken ct) =>
