@@ -2,8 +2,8 @@
 
 ## M2 finalization
 
-- **M2 passed complete local verification on 2026-09-05.** The owner authorizes a normal implementation commit/push to dahornea/relaylab and remote CI verification. The implementation candidate is ready; remote M2 CI evidence is pending at this record's revision.
-- Started from `main` at `434ee1283eee887f7932133d0b786a28af175c30`, matching `origin/main`. The intended remote is https://github.com/dahornea/relaylab. The 47 intended changed/new files contain M2 implementation, tests, local infrastructure, workflow and documentation; no unrelated changes were present.
+- **M2 is committed, pushed and verified locally and in Linux CI on 2026-09-05.** Implementation commit `4b43be543768fc0520fd4cc445d1e1442b253d72` passed [run 33988334119](https://github.com/dahornea/relaylab/actions/runs/33988334119). This evidence-recording follow-up changes only docs/STATUS.md; it does not alter the tested implementation.
+- Started from `main` at `434ee1283eee887f7932133d0b786a28af175c30`, matching `origin/main`. The authorized normal push to https://github.com/dahornea/relaylab advanced main to the implementation commit. Its 47 changed/new files contain M2 implementation, tests, local infrastructure, workflow and documentation; no unrelated changes were present.
 - Implemented persisted bounded retries and scheduling, exhaustion, idempotent replay, lease recovery, SQL reconciliation, competing-worker fencing and OpenTelemetry. Logical delivery identity survives retry/replay; each work slot and Started attempt has its own identity. HTTP runs outside SQL transactions. Interrupted remote outcomes remain Unknown.
 - No M3 work, Azure resources, migrations, frontend, release, package publication, force-push, history rewrite or access-setting changes are included.
 
@@ -48,9 +48,18 @@ README explains prerequisites, isolation, replay, metrics and explicit cleanup. 
 - EF Core SQL Server 10.0.11; Azure.Messaging.ServiceBus 7.20.2; Testcontainers SQL/Service Bus 4.14.0; xUnit 2.9.3, adapter 3.1.5, VSTest Microsoft.NET.Test.Sdk 18.9.0; OpenTelemetry hosting/OTLP 1.18.0. Updated lock files passed locked restore.
 - infra/versions.json pins SQL Server 2022-CU14-ubuntu-22.04, Service Bus emulator 2.0.0, SDK 10.0.400, ASP.NET 10.0.11 and Aspire dashboard 13.5.2.
 
-## Remote CI and remaining limitations
+## Executed remote CI
 
-- **M2 remote CI / Linux-hosted xUnit: pending.** The existing Ubuntu 24.04 workflow invokes the unfiltered complete M2 verification entry point, including real dependencies and the fresh-input recovery demo; evidence will be recorded after the authorized push and actual run.
+- **Implementation run:** [33988334119](https://github.com/dahornea/relaylab/actions/runs/33988334119), tested commit `4b43be543768fc0520fd4cc445d1e1442b253d72`, push to main, conclusion **success**. Job logs confirm **Ubuntu 24.04.4**, SDK **10.0.400**, Docker Linux execution and the same unfiltered `eng/verify.ps1` entry point.
+- Locked restore and Release build passed with **zero compiler warnings/errors**. Linux-hosted xUnit passed **47/47, zero failed/skipped**, with all nine test classes matching the expected source cases: **30 real SQL/broker integration cases and 17 pure cases**. Downloaded TRX was inspected independently of the green job conclusion.
+- Dependency logs confirm SQL Server **2022 CU14 (16.0.4135.4)** ready for client connections and the actual Service Bus emulator launching on Linux with the configured deliveries queue, PeekLock duration and MaxDeliveryCount. No mocks replaced those dependencies.
+- Fresh recovery delivery `f49720ec-cd89-43b7-85ee-29d55ec9ede1` exhausted three 503 attempts, returned replay 202/200 with stable work identity, and underwent actual worker SIGKILL after the receiver effect while SQL remained Processing/Started. Final state was **Delivered, generation 1, five attempts, Interrupted/Unknown preserved, one receiver effect**. The exhausted/interrupted/recovered JSON and final result were inspected.
+- Aspire captured trace `e1eafc0818e177d716dffdcc9b15ff00` with **23 spans**, all eight required lifecycle span kinds, one trace identity and all three services. Fresh demo cleanup passed. Linux-container execution and Linux-hosted tests are both verified for this implementation.
+- Commands used to inspect the actual run: `gh run view 33988334119 --repo dahornea/relaylab --log` and `gh run download 33988334119 --repo dahornea/relaylab --name m2-verification --dir artifacts/m2-finalization/ci-implementation`. Local metadata/logs and the inspected result are artifacts/m2-finalization/ci-implementation.{json,log}, ci-implementation-inspection.json and the downloaded artifact directory. Remote artifacts have seven-day retention; the run URL and this summary identify the evidence afterward.
+- GitHub emitted a nonblocking action-runtime notice: the existing pinned v4 actions target Node 20 and were executed on Node 24. All action steps passed. No M2 workflow correction or implementation fix was required after the push.
+
+## Remaining limitations
+
 - Historical M1 implementation `3b4e498` passed [run 33975051554](https://github.com/dahornea/relaylab/actions/runs/33975051554); later documentation `434ee12` passed [run 33975506539](https://github.com/dahornea/relaylab/actions/runs/33975506539). These are not M2 evidence.
 - Azure behavior is **NOT RUN**. Emulator execution does not establish Azure durability or identity. Progress requires retained SQL and available dependencies; permanent recipient failure can prevent completion. Valid dead letters remain inspectable while SQL regenerates current signals.
 - There is no universal exactly-once guarantee: fencing cannot undo an external effect, and a receiver can commit before sender acknowledgement. The sample's one effect relies on its durable receipt/effect transaction.
