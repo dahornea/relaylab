@@ -1,0 +1,6 @@
+# Copy to an ignored .tfvars file only for direct Terraform use.
+# The documented bootstrap.ps1 generates these inputs under ignored artifacts/cloud.
+subscription_id = "00000000-0000-0000-0000-000000000001"
+tenant_id       = "00000000-0000-0000-0000-000000000002"
+name_prefix     = "relaylabexample"
+location        = "westeurope"

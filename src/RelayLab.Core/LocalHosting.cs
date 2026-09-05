@@ -15,13 +15,14 @@ public static class LocalHosting
 {
     public static void RequireLocal(IHostEnvironment environment)
     {
-        if (!environment.IsDevelopment() && !environment.IsEnvironment("Testing"))
-            throw new InvalidOperationException("M1 requires the Development environment. Authenticated deployment is not implemented.");
+        if (!environment.IsDevelopment() && !environment.IsEnvironment("Testing") && !environment.IsProduction())
+            throw new InvalidOperationException("Use Development, Testing or explicitly configured Production hosting.");
     }
 
     public static void ConfigureWeb(WebApplicationBuilder builder)
     {
         RequireLocal(builder.Environment);
+        CloudHosting.ConfigureAuthentication(builder);
         builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = EventContract.BodyLimit);
         builder.Services.AddProblemDetails();
         builder.Services.ConfigureHttpJsonOptions(options =>

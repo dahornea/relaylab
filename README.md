@@ -1,112 +1,83 @@
 # RelayLab
 
-A .NET 10 webhook delivery service demonstrating SQL acceptance and outbox persistence, Azure Service Bus messaging, bounded durable retries, idempotent replay, interruption recovery and OpenTelemetry.
+A locally reproducible .NET 10 webhook delivery project: SQL acceptance and outbox persistence, durable retries, idempotent replay, worker recovery and OpenTelemetry. It runs with SQL Server, the Service Bus emulator and Aspire in Docker. **No Azure account, subscription, CLI or credentials are needed to clone, build, test or run the demo.**
 
-The API and worker share SQL state. A separate sample receiver atomically records a receipt and its effect using the permanent delivery ID. HTTP can repeat; this cooperating receiver demonstrates one effect per delivery in the tested scenarios. RelayLab does not promise universal exactly-once delivery.
+The API and worker share delivery state. A separate receiver commits its receipt and effect together using the permanent delivery ID. HTTP can repeat; this cooperating receiver demonstrates one effect per delivery in the tested scenarios. This is a reliability demonstration, not a production-readiness or universal exactly-once claim.
 
-## Run the failure and recovery demo
+## Run locally
 
-Prerequisites: .NET SDK **10.0.400** (or a compatible patch), **PowerShell 7**, Git, and Docker Desktop with **Linux containers**. Allow at least 6 GB for SQL, Service Bus and Aspire. The first run downloads the pinned Microsoft images and NuGet packages. SQL Developer and the Service Bus emulator are local development dependencies; Compose/Testcontainers configure their license acceptance.
+Prerequisites: Git, **PowerShell 7**, **.NET SDK 10.0.400** (or a compatible patch in that feature band), and Docker with a **Linux-container engine** and Compose. Allow at least 6 GB for SQL, Service Bus and Aspire. Initial restore/build downloads public NuGet packages and pinned Microsoft images. SQL Developer/emulator license acceptance is configured for local development.
 
-**Schema requirement:** M2 needs a fresh local database schema. It cannot upgrade an M1 database; initialization rejects that schema without erasing it. Preserve existing data in its own database/project. Verification always uses isolated disposable resources. See the M1 database upgrade note below before reusing an older demo project.
-
-From PowerShell 7 in your RelayLab checkout:
+From PowerShell 7:
 
 ```powershell
-pwsh -NoProfile -File .\eng\demo.ps1
+git clone https://github.com/dahornea/relaylab.git
+Set-Location relaylab
+pwsh -NoProfile -File ./eng/demo.ps1
 ```
 
-The script generates an ignored random SQL password, builds the applications and initializes fresh local databases. It verifies a normal event (`202`, identical repeat `200`, Delivered, one effect), then demonstrates a second delivery:
+The script generates an ignored random local SQL password, builds all three applications and explicitly initializes fresh databases. It checks normal acceptance (`202`), identical repeat (`200`), Delivered status and one effect, then demonstrates:
 
-1. The receiver returns 503. Three persisted attempts exhaust the generation.
+1. Three HTTP 503 attempts exhaust the generation.
 2. Replay returns 202; repeating its key returns 200 with the same work identity.
-3. The receiver commits its effect and withholds the acknowledgement. The script kills the actual worker process with SIGKILL while SQL still reports Started.
-4. The receiver and worker restart against their retained databases. SQL lease recovery preserves the interrupted/unknown attempt and schedules another work item. The receiver acknowledges the duplicate without repeating its effect.
-5. The final delivery is Delivered with five historical attempts, generation 1 and one receiver effect. The script queries Aspire and verifies the correlated recovery trace across API, worker and receiver.
+3. The receiver commits an effect while withholding acknowledgement. The demo kills the actual worker with SIGKILL while SQL still records Started.
+4. Worker and receiver restart against retained SQL. Recovery finishes with five attempts, an Interrupted/Unknown outcome and one receiver effect.
 
-Evidence is under `artifacts/demo/`: exhausted/interrupted/recovered status JSON, recovery trace and compact result JSON. The demo waits for required observable states and fails if the kill misses its intended boundary. Use `-Scenario Happy` for only the ordinary delivery flow.
+Evidence is saved under `artifacts/demo/`. Use `-Scenario Happy` for the ordinary delivery flow alone.
 
-| Local endpoint | Address |
+| Endpoint | Local address |
 | --- | --- |
 | API | http://127.0.0.1:5080 |
-| Sample receiver | http://127.0.0.1:5081 |
-| Aspire dashboard | http://127.0.0.1:18888 |
-| Emulator health | http://127.0.0.1:5300/health |
+| Receiver | http://127.0.0.1:5081 |
+| Aspire | http://127.0.0.1:18888 |
 
-SQL, AMQP and OTLP remain inside the Compose network. Aspire is anonymous on loopback for this local demo. Applications require Development/Testing; public ingress and cloud authentication are not implemented.
-
-**M1 database upgrade:** M2 needs a fresh local schema; `--init-db` rejects the earlier M1 schema. Preserve old data in its existing database/project. `eng/verify.ps1` always creates an isolated fresh project and leaves existing projects alone. If old demo data is disposable, explicitly reset that project's volume before running M2. Reset is not a migration or a rollback strategy.
-
-## Submit, inspect and replay
+Ports bind to loopback; SQL, AMQP and OTLP stay inside Compose. In Aspire **Traces**, filter on `@relaylab.delivery.id:<deliveryId>` from `recovery-result.json`. **Metrics → Table** shows worker attempts, outcomes, pending work and HTTP duration. Telemetry is buffered and can be lost; SQL history remains authoritative.
 
 ```powershell
-$body = '{"destinationId":"demo","eventType":"document.ready","data":{"documentId":"doc-002"}}'
-$delivery = Invoke-RestMethod http://127.0.0.1:5080/events -Method Post `
-  -ContentType application/json -Headers @{ 'Idempotency-Key' = 'example-002' } -Body $body
-Invoke-RestMethod "http://127.0.0.1:5080/deliveries/$($delivery.deliveryId)?after=0&limit=50" | ConvertTo-Json -Depth 8
-Invoke-RestMethod "http://127.0.0.1:5081/receipts/$($delivery.deliveryId)"
-
-# Only a Failed delivery permits a new replay; repeat the same key after a lost response.
-Invoke-RestMethod "http://127.0.0.1:5080/deliveries/$($delivery.deliveryId)/replay" `
-  -Method Post -Headers @{ 'Idempotency-Key' = 'replay-example-002' }
+$result = Get-Content -Raw artifacts/demo/recovery-result.json | ConvertFrom-Json
+Invoke-RestMethod "http://127.0.0.1:5080/deliveries/$($result.deliveryId)?after=0&limit=50" | ConvertTo-Json -Depth 8
+Invoke-RestMethod "http://127.0.0.1:5081/receipts/$($result.deliveryId)"
+pwsh -NoProfile -File ./eng/demo.ps1 -Action DeadLetters
 ```
 
-Default budget: three Started attempts per generation, including interruptions. Retry timeouts, transport errors, HTTP 408/429 and 5xx with persisted exponential backoff (2, 4… seconds, capped at 30). Other non-2xx responses stop that generation immediately. Replay preserves the delivery ID and history. A repeated replay key identifies its original generation/work even after delivery completes. See [contracts](docs/CONTRACTS.md) for bounds, errors and cursor pagination.
+## Build and verify
 
-`Failed` is sender knowledge: the receiver may already have committed an effect. Unknown outcomes stay visible in attempt history. SQL fencing protects newer owner state; it cannot undo an external HTTP effect.
-
-## Inspect telemetry and recovery
-
-In Aspire, open **Traces** and filter on `@relaylab.delivery.id:<deliveryId>` from `recovery-result.json`. The trace contains acceptance, publication, attempts, HTTP, receiver, replay and recovery spans. A killed process can lose buffered spans; SQL records remain authoritative.
-
-Under **Metrics**, select `relaylab-worker`, then `relaylab.attempt.outcomes`, `relaylab.attempt.started`, `relaylab.pending`, `relaylab.publications` or `relaylab.http.duration`. Use **Table** for numeric values; outcome tags distinguish rejected, interrupted and acknowledged transitions. API acceptance/replay and receiver effect counters are on their respective resources. Pending is a SQL snapshot per worker: do not sum it across replicas. Metrics have bounded labels, never delivery IDs. The viewer keeps data in memory and loses it on restart.
+From the checkout in PowerShell 7:
 
 ```powershell
-pwsh -NoProfile -File .\eng\demo.ps1 -Action DeadLetters
-docker compose logs --tail 100 worker
+dotnet restore RelayLab.slnx --locked-mode --configfile NuGet.Config
+dotnet build RelayLab.slnx -c Release --no-restore
+# Complete verification, including real SQL/broker tests and a fresh recovery demo:
+pwsh -NoProfile -File ./eng/verify.ps1
 ```
 
-Dead-letter inspection peeks at the first 50 messages and removes nothing. Broker exhaustion differs from application exhaustion: SQL periodically republishes eligible current Pending work, using the same work MessageId. An expired Processing lease consumes its interrupted slot and schedules another or ends Failed. No accepted intent is intentionally deleted from SQL. Progress still requires retained SQL and dependencies becoming available; a permanently failing receiver needs operator action.
+Verification runs all **63 tests** with xUnit/VSTest, uses isolated disposable databases and random loopback ports, copies/hash-checks candidate inputs, builds Linux application containers, and cleans up its own resources. Reports are under `artifacts/verification` and `artifacts/test-results`. Docker context handling is automatic; no manual connection strings or Terraform installation are needed for application verification.
 
-The emulator loses messages on restart. M2's SQL reconciliation can recreate current work signals, but this does not demonstrate Azure broker durability. The tests interrupt connectivity while retaining the emulator process and its messages.
+Ordinary [GitHub CI](.github/workflows/ci.yml) additionally validates Terraform and workflows, then runs the same unfiltered tests and recovery demo on Ubuntu 24.04. Terraform initialization disables the backend; CI never logs in to Azure. [STATUS](docs/STATUS.md) identifies the actual tested commits/runs and distinguishes local evidence from remote results.
 
-## Verify M2
+## Schema, cleanup and reliability limits
+
+**Use a fresh local M2 schema. Existing M1 databases are not upgraded; initialization rejects them without erasing data.** Preserve old databases in their own checkout/project. A fresh clone/demo or isolated verification creates the required schema; process restarts retain the receiver's SQL deduplication ledger. Do not reuse an old database by treating reset as migration.
 
 ```powershell
-pwsh -NoProfile -File .\eng\verify.ps1
+# Stop the default demo while retaining its SQL volume:
+pwsh -NoProfile -File ./eng/demo.ps1 -Action Down
+# Delete only this disposable demo project's volume and generated .env:
+pwsh -NoProfile -File ./eng/demo.ps1 -Action Reset
 ```
 
-This runs locked restore, a Release build with warnings as errors, all xUnit/VSTest tests against real SQL/emulator resources, and the failure/recovery demo from a hash-checked fresh copy of tracked and intended untracked inputs. It uses unique Compose names, random loopback ports and automatic owned-volume/secret cleanup. Reports are under `artifacts/verification` and `artifacts/test-results`. No commit or push is required.
+If you used `-ProjectName`, pass the same name to Down/Reset. Saved ports are reused; set `-ApiPort`, `-ReceiverPort`, `-BrokerHealthPort` and `-DashboardPort` when starting a fresh demo to avoid collisions.
 
-Focused development check:
+SQL retains accepted intent and persisted retry eligibility. Competing workers use expiring, fenced leases; a stale owner cannot overwrite newer state. Retry/replay preserves the logical delivery ID while work items and attempts have separate identities. The default budget is three attempts per generation, including interruptions. Retry timeouts, transport failures, 408/429 and 5xx with bounded backoff; other failures stop the generation. Replay is explicit and idempotent.
 
-```powershell
-# Only needed for direct Testcontainers invocation on Docker Desktop/Windows:
-$env:DOCKER_HOST = 'npipe://./pipe/dockerDesktopLinuxEngine'
-dotnet test .\tests\RelayLab.Tests\RelayLab.Tests.csproj -c Release --no-restore `
-  --filter 'FullyQualifiedName~RetryTests|FullyQualifiedName~RecoveryTests'
-Remove-Item Env:DOCKER_HOST
-```
+`Failed` does not prove that the receiver had no effect. HTTP runs outside SQL transactions, so a committed effect and lost response remain ambiguous. Progress requires retained SQL, available dependencies and a recoverable receiver. The **Service Bus emulator loses messages on restart**; SQL reconciliation and local tests do not prove Azure-hosted broker durability. Aspire is also in-memory. See [contracts](docs/CONTRACTS.md), [testing](docs/TESTING.md) and [operations](docs/OPERATIONS.md) for details.
 
-The verification script manages the Docker context itself. The GitHub Actions workflow invokes the same M2 acceptance suite and recovery demo on Ubuntu 24.04. See [STATUS](docs/STATUS.md) for actual local results, tested commits and remote CI evidence; historical M1 runs do not establish M2 verification.
+## Optional cloud preparation — deferred
 
-## Stop and troubleshoot
+The owner has chosen **not to create an Azure subscription or deploy**. Useful M3 preparation is retained: Terraform, scoped identity/OIDC configuration, authenticated ingress/receiver code, explicit schema jobs, immutable-image deployment, smoke/recovery checks and rollback/teardown procedures. [CLOUD.md](docs/CLOUD.md) records this locally validated preparation and its limitations.
 
-```powershell
-pwsh -NoProfile -File .\eng\demo.ps1 -Action Down
-# Explicitly delete this demo project's SQL volume and generated .env:
-pwsh -NoProfile -File .\eng\demo.ps1 -Action Reset
-```
+The cloud workflow has **only a manual trigger**. Pushes, pull requests, schedules and ordinary CI cannot invoke it. No cloud workflow is dispatched during verification. Azure deployment, effective permissions, billing, cloud rollback and teardown remain unexecuted; original M3 cloud acceptance is incomplete. Cloud schema initialization requires new empty databases and rejects unversioned M1/M2 databases; rollback only supports compatible verified M3 images.
 
-For a custom `-ProjectName`, pass the same name to Down/Reset. Saved ports are reused. `Down` keeps M2 SQL/receiver state but the emulator loses its queue and Aspire loses diagnostics.
+To reproduce the additional static checks, install checksum-verified Terraform **1.16.1** on PATH, then run `./eng/install-actionlint.ps1` followed by `./eng/verify-m3.ps1 -StaticOnly` in the same PowerShell session. These checks need internet downloads, but no Azure login. The full `eng/verify-m3.ps1` also runs application verification.
 
-| Symptom | Action |
-| --- | --- |
-| Docker unavailable | Start Docker Desktop's Linux engine. |
-| Persistence/readiness 503 | Check SQL/init logs; resolve connectivity/schema and retry the same key. |
-| Pending or expired Processing | Inspect worker, next eligibility and DLQ; SQL recovery needs a running worker and SQL/broker connectivity. |
-| Failed / Unknown | Inspect the full history; the receiver may have an effect. Replay deliberately with one stable replay key. |
-| Port collision | On a fresh demo, set `-ApiPort`, `-ReceiverPort`, `-BrokerHealthPort`, `-DashboardPort`. |
-| Missing traces after a kill | Export buffers are not durable. Inspect SQL; rerun the demo, which waits for trace ingestion before the kill. |
-
-Architecture, decisions, acceptance and operations live in [ARCHITECTURE](ARCHITECTURE.md), [DECISIONS](docs/DECISIONS.md), [TESTING](docs/TESTING.md), [OPERATIONS](docs/OPERATIONS.md) and [PLAN](PLAN.md). M3 cloud identity, migrations, deployment and rollback remain future work. The existing [license](LICENSE) is retained.
+[Architecture](ARCHITECTURE.md) · [Decisions](docs/DECISIONS.md) · [Original plan](PLAN.md) · [License](LICENSE)

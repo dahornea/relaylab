@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using RelayLab.Core;
+using Microsoft.AspNetCore.Authorization;
 
 namespace RelayLab.Api;
 
@@ -10,10 +11,22 @@ public static class Program
 {
     public static async Task Main(string[] args)
     {
+        if (args.Contains("--deploy-schema"))
+        {
+            var job = WebApplication.CreateBuilder([]);
+            await using var database = new RelayDb(new DbContextOptionsBuilder<RelayDb>()
+                .UseSqlServer(CloudHosting.SqlConnection(job.Configuration, "RelayLab", true)).Options);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            await SchemaDeployment.ApplyAsync(database, "relay", deadline.Token);
+            await SchemaDeployment.GrantRuntimeAsync(database, job.Configuration, false, deadline.Token);
+            Console.WriteLine("Relay schema baseline and runtime grants verified.");
+            return;
+        }
         var initialize = args.Contains("--init-db");
         await using var app = Build(args.Where(a => a != "--init-db").ToArray());
         if (initialize)
         {
+            if (CloudHosting.IsCloud(app.Environment)) throw new InvalidOperationException("Production initialization requires the explicit schema deployment job.");
             await using var db = await app.Services.GetRequiredService<IDbContextFactory<RelayDb>>().CreateDbContextAsync();
             await db.Database.EnsureCreatedAsync();
             var currentSchema = await db.Database.SqlQueryRaw<bool>("""
@@ -22,6 +35,11 @@ public static class Program
                 """).SingleAsync();
             if (!currentSchema) throw new InvalidOperationException("A fresh M2 local database is required. Preserve existing M1 data in its own database; schema upgrades are not implemented.");
             return;
+        }
+        if (CloudHosting.IsCloud(app.Environment))
+        {
+            await using var db = await app.Services.GetRequiredService<IDbContextFactory<RelayDb>>().CreateDbContextAsync();
+            await SchemaDeployment.VerifyAsync(db, "relay", default);
         }
         await app.RunAsync();
     }
@@ -32,20 +50,21 @@ public static class Program
         configure?.Invoke(builder);
         LocalHosting.ConfigureWeb(builder);
         Telemetry.Configure(builder.Services, builder.Configuration, "relaylab-api");
-        builder.Services.AddDbContextFactory<RelayDb>(options => options.UseSqlServer(LocalHosting.Connection(builder.Configuration, "RelayLab")));
+        builder.Services.AddDbContextFactory<RelayDb>(options => options.UseSqlServer(CloudHosting.SqlConnection(builder.Configuration, "RelayLab", CloudHosting.IsCloud(builder.Environment))));
         builder.Services.AddTransient<Acceptance>();
         builder.Services.AddTransient<Replay>();
         builder.Services.AddSingleton(RetryPolicy.From(builder.Configuration));
         var app = builder.Build();
         LocalHosting.UseSafeErrors(app);
+        CloudHosting.UseAuthentication(app);
 
-        app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
+        app.MapGet("/health/live", () => Results.Ok(new { status = "live", schemaVersion = SchemaDeployment.Version })).AllowAnonymous();
         app.MapGet("/health/ready", async (IDbContextFactory<RelayDb> databases, CancellationToken ct) =>
         {
             await using var db = await databases.CreateDbContextAsync(ct);
             _ = await db.Deliveries.AnyAsync(ct);
             return Results.Ok(new { status = "ready" });
-        });
+        }).AllowAnonymous();
 
         app.MapPost("/events", async (HttpRequest http, Acceptance acceptance, CancellationToken ct) =>
         {

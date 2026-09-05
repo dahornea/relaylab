@@ -4,6 +4,13 @@
 **/bin
 **/obj
 **/TestResults
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
+**/*.tfplan
+**/*.tfplan.json
 artifacts
 .env
 .env.*

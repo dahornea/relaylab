@@ -1,4 +1,4 @@
-name: M2 verification
+name: Repository verification
 on:
   pull_request:
   push:
@@ -11,20 +11,27 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           global-json-file: global.json
-      - name: Verify M2 including the fresh-input failure and recovery demo
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.1
+          terraform_wrapper: false
+      - name: Install checksum-verified actionlint
         shell: pwsh
-        run: ./eng/verify.ps1
+        run: ./eng/install-actionlint.ps1
+      - name: Verify M3 preparation, SQL/broker acceptance and fresh recovery demo
+        shell: pwsh
+        run: ./eng/verify-m3.ps1
       - name: Retain verification diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: m2-verification
+          name: m3-verification
           retention-days: 7
           path: |
             artifacts/verification/

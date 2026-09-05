@@ -76,3 +76,11 @@ Status includes current WorkId, generation, attempt number/budget, next eligibil
 ## Configuration and security
 
 Configuration identifies database, queue, destination and operational bounds. Generate actual names/examples alongside M1 code; .env examples contain no usable credentials. Local demo access is loopback-only. Cloud ingress authentication, workload identities and webhook signing/access controls are M3 acceptance requirements, not claims about M1.
+
+## M3 production boundary
+
+Production ingress requires a valid single-tenant v2 Entra app token: RS256 signature, configured audience/issuer, lifetime, tenant/object ID, `idtyp=app` and no delegated `scp`. API callers are the deployment workload identity; receiver webhooks require the worker identity, while receipt diagnostics require the separate deployment identity. Missing/invalid tokens yield 401 and authenticated callers outside the ACL yield 403. Only minimal health endpoints are anonymous. Resource app token issuance alone confers no API permission. Local Development/Testing remains loopback-only and unauthenticated.
+
+The worker sends an audience-specific managed-identity bearer token over HTTPS only to the exact configured receiver URI. Redirects remain disabled; no shared signing secret or fault-control ingress is added. SQL and Service Bus use explicit managed identities; runtime principals have only the documented table/queue permissions. All M2 identity, transaction, attempt and ambiguity contracts remain unchanged.
+
+Cloud M3 schema version 1 is an explicit **fresh** baseline with database-kind/model-hash verification. It does not upgrade unversioned M1/M2 data. Runtime startup cannot initialize schema. Application rollback is restricted to compatible M3 images and preserves the database; no universal exactly-once guarantee or destructive schema rollback is introduced. [CLOUD.md](CLOUD.md) records the network boundary, exact access and limitations requiring Azure execution.

@@ -32,6 +32,12 @@ public static class Program
             Console.WriteLine($"Peeked {messages.Count} messages (first 50). No messages removed.");
             return;
         }
+        var environment = host.Services.GetRequiredService<IHostEnvironment>();
+        if (CloudHosting.IsCloud(environment))
+        {
+            await using var db = await host.Services.GetRequiredService<IDbContextFactory<RelayDb>>().CreateDbContextAsync();
+            await SchemaDeployment.VerifyAsync(db, "relay", default);
+        }
         await host.RunAsync();
     }
 
@@ -44,10 +50,15 @@ public static class Program
         builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.None);
         var settings = WorkerSettings.From(builder.Configuration);
         builder.Services.AddSingleton(settings);
-        builder.Services.AddDbContextFactory<RelayDb>(o => o.UseSqlServer(LocalHosting.Connection(builder.Configuration, "RelayLab")));
-        builder.Services.AddSingleton(_ => WorkerSettings.CreateBus(LocalHosting.Connection(builder.Configuration, "ServiceBus")));
+        var cloud = CloudHosting.IsCloud(builder.Environment);
+        if (cloud && (settings.Destination.Scheme != "https" || settings.Destination.Port != 443))
+            throw new InvalidOperationException("Production receivers require HTTPS on port 443.");
+        builder.Services.AddDbContextFactory<RelayDb>(o => o.UseSqlServer(CloudHosting.SqlConnection(builder.Configuration, "RelayLab", cloud)));
+        builder.Services.AddSingleton(_ => cloud ? WorkerSettings.CreateCloudBus(builder.Configuration)
+            : WorkerSettings.CreateBus(LocalHosting.Connection(builder.Configuration, "ServiceBus")));
         builder.Services.AddSingleton(sp => sp.GetRequiredService<ServiceBusClient>().CreateSender(settings.Queue));
-        builder.Services.AddSingleton(_ => WorkerSettings.CreateHttpClient());
+        builder.Services.AddSingleton(_ => WorkerSettings.CreateHttpClient(cloud ? new ReceiverAuthorizationHandler(
+            CloudHosting.Credential(builder.Configuration), CloudHosting.RequiredGuid(builder.Configuration, "Security:ReceiverAudience"), settings.Destination) : null));
         builder.Services.AddSingleton<OutboxPublisher>();
         builder.Services.AddSingleton<DeliveryProcessor>();
         builder.Services.AddSingleton<DeliveryTransitions>();

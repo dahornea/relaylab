@@ -1,0 +1,5 @@
+# Nonsecret example only. bootstrap.ps1 writes actual names in ignored configuration.json.
+storage_account_name = "relaylabexamplestate"
+container_name       = "tfstate"
+key                  = "relaylab.tfstate"
+# Entra authentication is mandatory in versions.tf; GitHub uses OIDC, owner uses Azure CLI.

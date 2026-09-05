@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Azure.Monitor.OpenTelemetry.Exporter;
 
 namespace RelayLab.Core;
 
@@ -27,12 +28,14 @@ public static class Telemetry
     public static void Configure(IServiceCollection services, IConfiguration configuration, string service)
     {
         var enabled = !string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
+        var azure = !string.IsNullOrWhiteSpace(configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]);
         var instance = Guid.NewGuid().ToString("N");
         services.AddOpenTelemetry().ConfigureResource(r => r.AddService(service, serviceInstanceId: instance))
             .WithTracing(t =>
             {
                 t.AddSource(Name).SetSampler(new AlwaysOnSampler());
                 if (enabled) t.AddOtlpExporter(o => o.Endpoint = new Uri(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]!));
+                if (azure) t.AddAzureMonitorTraceExporter(o => { o.ConnectionString = configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]; o.Credential = CloudHosting.Credential(configuration); });
             })
             .WithMetrics(m =>
             {
@@ -42,6 +45,7 @@ public static class Telemetry
                     Boundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20]
                 });
                 if (enabled) m.AddOtlpExporter(o => o.Endpoint = new Uri(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]!));
+                if (azure) m.AddAzureMonitorMetricExporter(o => { o.ConnectionString = configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]; o.Credential = CloudHosting.Credential(configuration); });
             });
     }
 

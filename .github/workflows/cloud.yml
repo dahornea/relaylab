@@ -1,0 +1,100 @@
+# Optional preparation only: Azure deployment is deferred by the owner.
+# Keep manual-only; ordinary CI must never call or dispatch this workflow.
+name: M3 cloud deployment (manual, deferred)
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        required: true
+        options: [deploy, verify, rollback, teardown]
+      rollback_run_id:
+        description: Successful prior M3 deploy run containing verified-release.json
+        type: string
+      teardown_resource_group:
+        description: Exact approved application resource group for teardown
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: relaylab-cloud
+  cancel-in-progress: false
+jobs:
+  cloud:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: relaylab-demo
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARM_USE_OIDC: 'true'
+      ARM_USE_AZUREAD: 'true'
+      CLOUD_CONFIGURATION: ${{ vars.M3_CONFIGURATION }}
+      OPERATION: ${{ inputs.operation }}
+      ROLLBACK_RUN: ${{ inputs.rollback_run_id }}
+      TEARDOWN_GROUP: ${{ inputs.teardown_resource_group }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require passing acceptance for this exact commit
+        shell: pwsh
+        run: |
+          $runs = gh run list --repo dahornea/relaylab --workflow ci.yml --commit $env:GITHUB_SHA --json conclusion,headSha --limit 20 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !($runs | Where-Object { $_.headSha -eq $env:GITHUB_SHA -and $_.conclusion -eq 'success' })) { throw 'This exact commit needs passing M3 repository verification before cloud work.' }
+          New-Item -ItemType Directory -Force artifacts/cloud | Out-Null
+          $env:CLOUD_CONFIGURATION | Set-Content artifacts/cloud/configuration.json
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.1
+          terraform_wrapper: false
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Prepare Azure CLI commands
+        shell: pwsh
+        run: |
+          az version
+          az extension add --name containerapp --upgrade --only-show-errors
+          if ($LASTEXITCODE -ne 0) { throw 'Container Apps CLI extension failed.' }
+          az extension add --name application-insights --upgrade --only-show-errors
+          if ($LASTEXITCODE -ne 0) { throw 'Application Insights CLI extension failed.' }
+      - name: Execute approved operation
+        shell: pwsh
+        run: |
+          switch ($env:OPERATION) {
+            deploy { ./eng/cloud/deploy.ps1 -ConfigurationPath artifacts/cloud/configuration.json }
+            verify { ./eng/cloud/verify.ps1 -ConfigurationPath artifacts/cloud/configuration.json -FailureRecovery }
+            teardown { ./eng/cloud/teardown.ps1 -ConfigurationPath artifacts/cloud/configuration.json -ConfirmResourceGroup $env:TEARDOWN_GROUP -Apply }
+            rollback {
+              if ($env:ROLLBACK_RUN -notmatch '^[0-9]+$') { throw 'A prior successful deployment run is required.' }
+              $run = gh api "repos/dahornea/relaylab/actions/runs/$env:ROLLBACK_RUN" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/cloud.yml' -or $run.head_branch -ne 'main') { throw 'Untrusted rollback run.' }
+              gh run download $env:ROLLBACK_RUN --repo dahornea/relaylab --name cloud-evidence --dir artifacts/cloud/rollback-input
+              if ($LASTEXITCODE -ne 0) { throw 'Rollback artifact unavailable; use retained owner evidence explicitly.' }
+              $release = Get-Content -Raw artifacts/cloud/rollback-input/verified-release.json | ConvertFrom-Json
+              if ($release.source_commit -ne $run.head_sha) { throw 'Rollback release does not match its tested run.' }
+              ./eng/cloud/rollback.ps1 -ConfigurationPath artifacts/cloud/configuration.json -ReleasePath artifacts/cloud/rollback-input/verified-release.json
+            }
+          }
+      - name: Retain redacted cloud evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-evidence
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            artifacts/cloud/verified-release.json
+            artifacts/cloud/smoke.json
+            artifacts/cloud/exhausted.json
+            artifacts/cloud/recovery.json
+            artifacts/cloud/telemetry.json
+            artifacts/cloud/pre-restart-telemetry.json
+            artifacts/cloud/metrics.json
+            artifacts/cloud/rollback.json
+            artifacts/cloud/teardown.json

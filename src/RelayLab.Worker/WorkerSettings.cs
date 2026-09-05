@@ -31,13 +31,28 @@ public sealed record WorkerSettings(Uri Destination, string Queue, int HttpTimeo
         RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0, TryTimeout = TimeSpan.FromSeconds(5) }
     });
 
-    public static HttpClient CreateHttpClient() => new(new SocketsHttpHandler
+    public static ServiceBusClient CreateCloudBus(IConfiguration configuration)
     {
+        var name = configuration["Azure:ServiceBusNamespace"] ?? "";
+        if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"^[a-zA-Z0-9-]+\.servicebus\.windows\.net$"))
+            throw new InvalidOperationException("Configure the Azure Service Bus namespace hostname.");
+        return new(name, RelayLab.Core.CloudHosting.Credential(configuration), new ServiceBusClientOptions
+        { TransportType = ServiceBusTransportType.AmqpTcp, RetryOptions = new() { MaxRetries = 0, TryTimeout = TimeSpan.FromSeconds(5) } });
+    }
+
+    public static HttpClient CreateHttpClient(DelegatingHandler? authorization = null)
+    {
+        var transport = new SocketsHttpHandler
+        {
         AllowAutoRedirect = false,
         UseCookies = false,
         MaxResponseHeadersLength = 16,
         MaxResponseDrainSize = 0,
         ConnectTimeout = TimeSpan.FromSeconds(5),
         PooledConnectionLifetime = TimeSpan.FromMinutes(2)
-    }) { Timeout = Timeout.InfiniteTimeSpan };
+        };
+        if (authorization is null) return new(transport) { Timeout = Timeout.InfiniteTimeSpan };
+        authorization.InnerHandler = transport;
+        return new(authorization) { Timeout = Timeout.InfiniteTimeSpan };
+    }
 }

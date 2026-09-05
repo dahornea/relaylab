@@ -1,5 +1,11 @@
 # CI/CD and operations
 
+## Current scope: local execution and GitHub CI
+
+The owner deferred Azure deployment and will not create a subscription. Clone, build, all tests and Docker demos need only the local prerequisites in README; no Azure credentials or CLI are needed. Keep the M3 files as optional preparation. Effective cloud permissions, deployment, billing, cloud rollback and teardown remain unexecuted, and the original M3 cloud acceptance is incomplete.
+
+The inspected workflow chain is `ci.yml` → `eng/verify-m3.ps1` → `eng/verify.ps1` → `eng/demo.ps1`. CI runs on push to main, pull request or manual dispatch, with read-only repository permission. Its Terraform commands use `init -backend=false` and `validate`; it parses cloud scripts but does not execute them. The only trigger on `cloud.yml` is `workflow_dispatch`; it has no push, pull-request, schedule, workflow_run or workflow_call trigger. No ordinary workflow/script dispatches cloud deployment. Configuration is validated statically, never by dispatching the cloud workflow. Actual GitHub CI evidence belongs in STATUS.
+
 ## M1: reproducible local execution and CI
 
 Create an eng/ verification entry point after the actual solution and runner exist. It must propagate failures, restore locked dependencies, build, run required tests and provide useful logs. Generated output belongs under artifacts/, bin/obj or TestResults and remains ignored.
@@ -8,7 +14,7 @@ Author one GitHub Actions workflow for a Linux Docker-capable runner. Use tested
 
 Align Compose and tests on images, queue configuration and application prerequisites. Health checks and startup readiness must reflect required dependencies. Supply a local .env.example with placeholders and documented generation/setup of local secrets. Bind host demo ports to loopback. Avoid committing credentials or storing dependency image copies in Git.
 
-Implemented entry points: `eng/verify.ps1` and `eng/demo.ps1`; versions live in `infra/versions.json`. Compose checks SQL with sqlcmd; the demo polls API/receiver database readiness, emulator `/health` and the dashboard before starting work. Explicit local initialization services run `--init-db` before application startup. M2 initialization requires a fresh M2 schema and rejects the older M1 schema; it never silently upgrades or erases data. Controlled migrations remain M3 work.
+Implemented local entry points: `eng/verify.ps1` and `eng/demo.ps1`; versions live in `infra/versions.json`. Compose checks SQL with sqlcmd; the demo polls API/receiver database readiness, emulator `/health` and the dashboard before starting work. Explicit local initialization services run `--init-db` before application startup. M2 initialization requires a fresh M2 schema and rejects the older M1 schema; it never silently upgrades or erases data. M3 adds a separate explicit fresh versioned baseline; it does not migrate existing M1/M2 data.
 
 The authored `.github/workflows/ci.yml` uses an Ubuntu 24.04 Docker-capable runner, the selected SDK, read-only repository permissions and commit-pinned official actions. It invokes the same verification script, retaining selected TRX/log diagnostics for seven days. It does not upload `.env` or complete fresh candidate directories. Remote execution is recorded only in STATUS when it actually occurs.
 
@@ -37,7 +43,15 @@ Local runbook:
 
 The sample receiver alone has startup modes Acknowledge, Reject, CommitThenAbortOnce and CommitThenWaitOnce. The latter two apply only to a newly inserted durable receipt; duplicate receipts acknowledge normally even after process restart. The demo sets these through Compose environment and recreates the sample. No fault controls are exposed through production ingress.
 
-## M3: prepare before provisioning
+## M3: prepared operations
+
+The concrete implementation and exact commands are in [CLOUD.md](CLOUD.md): inventory/cost, owner/bootstrap permissions, remote state, GitHub environment/OIDC, runtime table/queue permissions, explicit schema jobs, immutable rollout, smoke/failure/telemetry verification, application rollback and two-stage teardown. Current execution evidence is in STATUS; this preparation does not establish M3 cloud acceptance.
+
+`eng/verify-m3.ps1` is the repository verification entry point including optional infrastructure preparation. `ci.yml` runs backend-disabled Terraform validation and actionlint, then the entire real SQL/broker/container verification. `cloud.yml` remains manual-only and deferred; its authored main/environment/exact-SHA CI gates do not establish that any Azure identity or GitHub environment has been configured. No cloud workflow is executed during local finalization.
+
+`--deploy-schema` creates a locked, versioned fresh baseline and grants runtime DML permissions. Production rejects `--init-db` and verifies baseline compatibility on startup. Existing M1/M2 databases are not adopted/upgraded/reset. Compatible old M3 images can be redeployed as new Single-mode revisions after the target schema job verifies the unchanged baseline. The scripts never perform an automatic database downgrade.
+
+The following original operating requirements are retained for a future separately authorized cloud effort; they are not current execution tasks:
 
 Target one Azure environment using Container Apps, Azure SQL and Service Bus. Add registry/logging/identity resources only as required by the selected deployment. Terraform manages the reviewed resource set; protect state and secrets outside Git and track the provider lock file.
 

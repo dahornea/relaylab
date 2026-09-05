@@ -19,6 +19,9 @@ artifacts/
 *.tfstate.*
 *.tfplan
 *.tfvars
+*.tfvars.json
+*.tfplan.json
+*.tfstate.backup
 !*.tfvars.example
 crash.log
 **/node_modules/
