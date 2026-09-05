@@ -55,7 +55,8 @@ switch ($Action) {
     'Reset' {
         # Compose scopes deletion to this explicitly named local project's volume.
         Invoke-Compose @('down', '--volumes', '--remove-orphans')
-        Remove-Item -LiteralPath $envFile
+        # Dotfiles are hidden on Unix; -Force permits removal of this one generated file.
+        Remove-Item -LiteralPath $envFile -Force
         return
     }
     'DeadLetters' { Invoke-Compose @('exec', '-T', 'worker', 'dotnet', 'RelayLab.Worker.dll', '--deadletters'); return }

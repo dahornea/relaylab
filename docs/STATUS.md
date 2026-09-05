@@ -2,7 +2,7 @@
 
 ## Current task
 
-- State: **M1 complete locally**. Required verification passed and independent review found no concrete blocker.
+- State: **M1 complete locally; remote finalization in progress**. The first Linux CI run passed build/tests/demo but failed generated-secret cleanup; its narrow correction is ready for rerun.
 - Authorized scope: owner's 2026-09-05 M1 request and subsequent finalization request authorize normal M1 commits, push to the intended GitHub repository and actual CI verification. M2/M3, releases, package publication, access-setting changes and cloud provisioning remain unauthorized.
 - Implemented: API validation/acceptance/status, SQL transactional outbox, Service Bus publisher/consumer, recoverable claims and durable attempts, separate receiver ledger/effect, Docker demo, eng verification and authored CI.
 - Existing license and bootstrap context retained. Publication candidate includes the reviewed application, tests, scripts, CI, lock files and bootstrap guidance; generated artifacts and local secrets are excluded.
@@ -28,9 +28,10 @@
 - Fresh-input container demo: **passed**, delivery a4c33a52-2e8a-4d70-bb30-a457a436b948, Delivered, one attempt, one receiver effect, identical repeat 200. Inputs included tracked and intended untracked files, with SHA-256 comparisons. Evidence: artifacts/verification/candidate-inputs.sha256, fresh-demo.log and fresh-demo-result.json. Isolated Compose containers/network/SQL volume and generated .env were cleaned up; build images/cache remain local.
 - Verification-script defects fixed during execution: normalize Docker Desktop's Windows pipe URI for Testcontainers only, then restore Docker CLI's environment before Compose. Earlier failed runs are not counted as passes.
 - Post-review focused check: `dotnet test tests/RelayLab.Tests/RelayLab.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~Outbox_insert_failure --logger 'trx;LogFileName=atomicity-review.trx' --results-directory artifacts/review` passed (1/1). A test-only interceptor now asserts SQL error 51000, proving the trigger observed the already-written Delivery before rollback. Production source is unchanged from the full 21-case/fresh-demo pass; this affected test was rebuilt and rerun after its stronger assertion.
-- Remote CI: NOT RUN; `.github/workflows/ci.yml` authored with verified official action commit references.
+- First remote CI: implementation commit `f47445b376253a12be42ace09cd68f6321d563ef` pushed normally to main; [run 33974639863](https://github.com/dahornea/relaylab/actions/runs/33974639863) failed overall during cleanup. Actual Ubuntu 24.04.4 / SDK 10.0.400 execution passed locked restore, warning-clean Release build, all 21 tests (0 failed/skipped) and the fresh-input demo (Delivered, one attempt/effect, repeat 200). Logs/TRX were downloaded and inspected under ignored artifacts/github/33974639863.
+- Concrete CI failure: PowerShell on Unix treats `.env` as hidden, so plain Remove-Item refused to delete it after successful Compose resource cleanup. The demo now uses `Remove-Item -LiteralPath $envFile -Force` for that one generated file. A focused Linux PowerShell 7.6.4 check in the selected SDK container reproduced the original failure and executed the exact corrected script statement successfully; artifacts/publication/unix-env-cleanup.log records the result. No application code or integration tests were changed.
 - Azure deployment: NOT RUN; M3 requires its own request and resource approval.
-- Linux containers executed SQL, broker and all three published applications. The xUnit test host ran on Windows; Linux-host xUnit execution is UNVERIFIED.
+- Linux-host xUnit execution is now verified by the first remote run, including all real SQL/broker cases; overall workflow success still requires the cleanup correction to pass remotely. Windows local and Linux container demo evidence above remains valid.
 
 ## Review and remaining limits
 
@@ -42,7 +43,7 @@
 
 ## Next step
 
-Commit and push the reviewed M1 candidate to dahornea/relaylab on main, inspect its actual GitHub Actions logs/artifacts, and record the tested implementation commit and remote results in a separate documentation update. Reuse the valid local evidence above; run additional checks only for concrete changes or failures. M2/M3 require a separate request.
+Commit/push the verified cleanup correction normally, inspect its GitHub Actions run, and record final tested commit/results in a documentation-only update. M2/M3 require a separate request.
 
 ## Update convention
 
